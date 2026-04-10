@@ -1,0 +1,50 @@
+---
+description: Keep reShkolo implementation aligned with agreed MVP principles
+alwaysApply: true
+---
+
+# reShkolo MVP Direction
+
+## Product intent
+
+- Build a web-first experience (opened via link/QR in browser), not an app-store product.
+- Center student-to-teacher feedback while keeping the experience as serious and familiar as existing school systems.
+
+## Space model
+
+- Keep spaces flat: no single exclusive recipient or private owner.
+- Allow invited participants on equal footing within a space.
+- Students can invite teachers, principals, and parents.
+- Invited teachers may also submit reflective feedback when invited.
+
+## MVP input/output rules
+
+- Feedback input supports only free text or speech.
+- Do not introduce tags, numeric ratings, scoring, or threshold gates in MVP.
+- Output consumed by participants is anonymous and aggregated.
+- UI shows aggregated summary only (no raw feedback list in MVP).
+- UI language is English.
+
+## Aggregation pipeline constraints
+
+- For voice submissions: transcribe speech to text first.
+- Classify sentiment/type as praise (`похвала`) or critical remark (`забележка`).
+- Run classification as a separate call from summary generation.
+- Append each submission to the collective feedback pool.
+- Generate updated aggregate summaries through LLM instructions.
+- Aggregation prompts should prioritize constructive feedback and de-emphasize repetitive, low-information content.
+- If aggregation fails, keep the submitted feedback (do not roll back the row).
+
+## Scope boundaries
+
+- Do not lock in final data schema in early MVP planning.
+- Keep milestones and deeper architecture as separate planning steps.
+
+## Implementation stack (decided)
+
+- **Wasp** app; deploy with **Railway** (Postgres included). Start on free tier; upgrade when needed.
+- **PostgreSQL** for durable data (not file-only storage).
+- **Aggregation:** hosted LLM APIs only (target **Claude Opus**-class for quality); compare with cheaper/free API models in tests — **no self-hosted** LLM weights.
+- **Speech-to-text:** hosted transcription API only (no self-hosted STT).
+- **Aggregation:** hybrid in MVP — **sync classification** on submit, **async summary generation** in background.
+- **Access/join:** anyone with app access can create a space; joining by short code is supported.
