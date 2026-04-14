@@ -273,7 +273,7 @@ export function JournalAppHeader({
       className="relative z-10 w-full shrink-0 bg-[#1583ca] text-white shadow-sm"
       role="banner"
     >
-      <div className="mx-auto w-full max-w-lg px-3 pb-3 pt-2">
+      <div className="w-full px-2 pb-3 pt-2">
         <div className="relative flex items-center justify-center py-1">
           <div className="absolute left-0 top-1/2 z-10 -translate-y-1/2">
             <LanguageSwitch lang={lang} onChange={onLangChange} />
@@ -286,7 +286,7 @@ export function JournalAppHeader({
           </div>
         </div>
 
-        <div className="mt-2 flex items-stretch gap-2">
+        <div className="mt-2 flex items-stretch gap-1">
           <div
             className={`flex ${ROW_H} w-6 shrink-0 items-center justify-center text-white`}
             aria-hidden
@@ -333,7 +333,7 @@ export function JournalAppHeader({
             type="button"
             disabled={shareDisabled || !onShareSpace}
             onClick={() => onShareSpace?.()}
-            className={`flex ${ROW_H} w-10 shrink-0 items-center justify-center rounded-md text-white outline-none ring-offset-2 ring-offset-[#1583ca] transition-colors hover:bg-white/15 focus-visible:ring-2 focus-visible:ring-white/70 disabled:pointer-events-none disabled:opacity-35`}
+            className={`flex ${ROW_H} w-9 shrink-0 items-center justify-center rounded-md text-white outline-none ring-offset-2 ring-offset-[#1583ca] transition-colors hover:bg-white/15 focus-visible:ring-2 focus-visible:ring-white/70 disabled:pointer-events-none disabled:opacity-35`}
             aria-label={t.shareSpace}
           >
             <ShareIcon className="h-6 w-6" aria-hidden />
@@ -400,6 +400,7 @@ function NewSpaceNamePicker({
         <input
           id={listId + "-name"}
           type="text"
+          autoFocus
           value={newNameDraft}
           onChange={(e) => onNewNameChange(e.target.value)}
           onKeyDown={(e) => {

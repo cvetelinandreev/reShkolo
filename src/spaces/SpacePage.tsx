@@ -125,6 +125,14 @@ export function SpacePage() {
     }, durationMs);
   }
 
+  function dismissToast() {
+    if (toastTimerRef.current != null) {
+      window.clearTimeout(toastTimerRef.current);
+      toastTimerRef.current = null;
+    }
+    setToast(null);
+  }
+
   useEffect(() => {
     saveSpaces(spaces);
   }, [spaces]);
@@ -442,7 +450,7 @@ export function SpacePage() {
         shareDisabled={!activeSpace}
       />
 
-      <div className="mx-auto flex min-h-0 min-w-0 w-full max-w-lg flex-1 flex-col overflow-hidden px-4 pt-3 font-light">
+      <div className="flex min-h-0 min-w-0 w-full flex-1 flex-col overflow-hidden px-2 pt-3 font-light">
         {(joinError || slugError) && (
           <p className="shrink-0 text-sm text-red-600">{joinError ?? slugError}</p>
         )}
@@ -450,8 +458,8 @@ export function SpacePage() {
         {isNewRoute && !activeSpace && (
           <p className="shrink-0 text-sm text-neutral-600">
             {lang === "bg"
-              ? "Въведете име в полето „Отзиви за“, натиснете Създай или Enter, след което споделете линка."
-              : "Type a name in “Feedback for”, press Create or Enter, then share the link."}
+              ? "Въведете име в полето, натиснете Готово и след това споделете линка."
+              : "Enter the name in the field, then press Done, and then share the link."}
           </p>
         )}
 
@@ -513,9 +521,9 @@ export function SpacePage() {
       </div>
 
       {activeSpace && (
-        <div className="shrink-0 border-t border-neutral-200/90 bg-neutral-50 px-4 pb-[max(0.75rem,env(safe-area-inset-bottom,0px))] pt-2">
+        <div className="shrink-0 border-t border-neutral-200/90 bg-neutral-50 px-2 pb-[max(0.75rem,env(safe-area-inset-bottom,0px))] pt-2">
           <form
-            className="mx-auto max-w-lg"
+            className="w-full"
             autoComplete="off"
             onSubmit={(e) => {
               e.preventDefault();
@@ -523,30 +531,19 @@ export function SpacePage() {
             }}
           >
             <div className="flex items-center gap-2">
-              <input
-                type="search"
-                inputMode="text"
-                autoComplete="off"
-                autoCorrect="off"
-                autoCapitalize="off"
-                spellCheck={false}
-                name="feedback"
-                {...{
-                  "data-lpignore": "true",
-                  "data-1p-ignore": "",
-                  "data-bwignore": "",
-                }}
+              <textarea
                 value={feedbackText}
                 onChange={(e) => setFeedbackText(e.target.value)}
                 onKeyDown={(e) => {
-                  if (e.key !== "Enter" || !feedbackText.trim()) return;
+                  if (e.key !== "Enter" || e.shiftKey || !feedbackText.trim()) return;
                   e.preventDefault();
                   void handleSubmitFeedback();
                 }}
+                rows={2}
                 placeholder={
                   lang === "bg" ? "Напишете отзив…" : "Write feedback…"
                 }
-                className="composer-field h-12 min-w-0 flex-1 rounded-full border border-neutral-300 bg-white px-4 py-3 text-base font-light text-neutral-900 shadow-sm outline-none ring-[#1583ca]/35 placeholder:text-neutral-400 focus:ring-2 focus:ring-[#1583ca]/40"
+                className="min-h-[3rem] min-w-0 flex-1 resize-none rounded-3xl border border-neutral-300 bg-white px-3 py-2 text-base font-light leading-snug text-neutral-900 shadow-sm outline-none ring-[#1583ca]/35 placeholder:text-neutral-400 focus:ring-2 focus:ring-[#1583ca]/40"
                 disabled={busy}
                 aria-label={lang === "bg" ? "Отзив" : "Feedback"}
               />
@@ -579,7 +576,7 @@ export function SpacePage() {
         </div>
       )}
 
-      <Snackbar open={toast != null}>
+      <Snackbar open={toast != null} onClose={dismissToast}>
         <span className="block whitespace-pre-wrap">{toast}</span>
       </Snackbar>
     </div>
