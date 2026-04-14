@@ -8,6 +8,7 @@ import {
 } from "wasp/client/operations";
 import { Button } from "../shared/components/Button";
 import { Snackbar } from "../shared/components/Snackbar";
+import { OpenBookIcon } from "../shared/components/icons/OpenBookIcon";
 import {
   JournalAppHeader,
   persistHeaderLang,
@@ -252,6 +253,9 @@ export function SpacePage() {
       }
     : null;
 
+  const praiseCount = summaryPayload?.classificationMeta.positiveCount ?? 0;
+  const remarksCount = summaryPayload?.classificationMeta.negativeCount ?? 0;
+
   useEffect(() => {
     if (!activeSpaceId) {
       setSummaryPayload(null);
@@ -333,10 +337,6 @@ export function SpacePage() {
     }
   }
 
-  const inviteUrl = activeSpace
-    ? `${window.location.origin}/${activeSpace.shortCode}`
-    : "";
-
   async function copyTextWithFallback(text: string): Promise<boolean> {
     try {
       if (navigator.clipboard?.writeText) {
@@ -361,39 +361,6 @@ export function SpacePage() {
       return ok;
     } catch {
       return false;
-    }
-  }
-
-  async function copyInvite() {
-    if (!inviteUrl) return;
-    const copied = await copyTextWithFallback(inviteUrl);
-    if (copied) {
-      showToast(
-        lang === "bg"
-          ? "Връзката за покана е копирана."
-          : "The invite link has been copied.",
-      );
-    } else {
-      showToast(
-        lang === "bg"
-          ? "Неуспешно копиране на връзката за покана."
-          : "Could not copy the invite link.",
-      );
-    }
-  }
-
-  async function shareInvite() {
-    if (!activeSpace || !summaryPayload) return;
-    const text = [
-      `Join my reShkolo space (${activeSpace.shortCode})`,
-      summaryPayload.summary ? `\nSummary: ${summaryPayload.summary}` : "",
-    ]
-      .join("")
-      .trim();
-    if (navigator.share) {
-      await navigator.share({ title: "reShkolo", text, url: inviteUrl });
-    } else {
-      await copyInvite();
     }
   }
 
@@ -464,7 +431,7 @@ export function SpacePage() {
         shareDisabled={!activeSpace}
       />
 
-      <div className="mx-auto flex min-h-0 min-w-0 w-full max-w-lg flex-1 flex-col gap-6 overflow-x-hidden overflow-y-auto overscroll-y-contain px-4 py-6">
+      <div className="mx-auto flex min-h-0 min-w-0 w-full max-w-lg flex-1 flex-col gap-2 overflow-x-hidden overflow-y-auto overscroll-y-contain px-4 pb-10 pt-3 font-light">
         {(joinError || slugError) && (
           <p className="text-sm text-red-600">{joinError ?? slugError}</p>
         )}
@@ -478,68 +445,67 @@ export function SpacePage() {
         )}
 
         {activeSpace && (
-          <section className="rounded-lg border border-neutral-200 bg-white p-4 shadow-sm">
-            <h2 className="text-lg font-semibold">
-              {lang === "bg" ? "Покана" : "Invite"}
-            </h2>
-            <p className="break-all text-sm text-neutral-700">{inviteUrl}</p>
-            <div className="mt-2 flex flex-wrap gap-2">
-              <Button onClick={copyInvite} disabled={busy}>
-                {lang === "bg" ? "Копирай връзка" : "Copy link"}
-              </Button>
-              <Button variant="ghost" onClick={shareInvite} disabled={busy}>
-                {lang === "bg" ? "Сподели" : "Share"}
-              </Button>
+          <div className="flex flex-col gap-2">
+            <div className="flex items-center gap-2">
+              <OpenBookIcon className="h-6 w-6 shrink-0 object-contain" />
+              <h1 className="text-xl font-medium tracking-wide text-neutral-900">
+                {lang === "bg" ? "ОБЩО" : "OVERVIEW"}
+              </h1>
             </div>
-          </section>
-        )}
 
-        {activeSpace && (
-          <section className="rounded-lg border border-neutral-200 bg-white p-4 shadow-sm">
-            <h2 className="text-lg font-semibold">
-              {lang === "bg" ? "Обобщение" : "Aggregated summary"}
-            </h2>
+            <div
+              className="flex flex-wrap items-center gap-x-6 gap-y-2 text-lg"
+              style={{ color: "#9C9C9C" }}
+            >
+              <div className="flex items-center gap-2">
+                <span>{lang === "bg" ? "Похвали" : "Praise"}</span>
+                <span
+                  className="inline-flex aspect-square min-h-[2.1em] min-w-[2.1em] items-center justify-center rounded-full text-base font-normal tabular-nums text-white"
+                  style={{ backgroundColor: "#A5BB4F" }}
+                >
+                  {praiseCount}
+                </span>
+              </div>
+              <div className="flex items-center gap-2">
+                <span>{lang === "bg" ? "Забележки" : "Remarks"}</span>
+                <span
+                  className="inline-flex aspect-square min-h-[2.1em] min-w-[2.1em] items-center justify-center rounded-full text-base font-normal tabular-nums text-white"
+                  style={{ backgroundColor: "#E68C6C" }}
+                >
+                  {remarksCount}
+                </span>
+              </div>
+              {summaryPayload?.jobStatus === "pending" ? (
+                <span>{lang === "bg" ? "обновяване…" : "updating…"}</span>
+              ) : null}
+            </div>
+
             {!summaryPayload && <p className="text-sm text-neutral-600">…</p>}
             {summaryPayload && (
-              <div className="mt-2 space-y-2 text-sm">
-                <p className="text-neutral-600">
-                  {lang === "bg" ? "Записи" : "Feedback recorded"}:{" "}
-                  {summaryPayload.classificationMeta.totalCount} (
-                  {lang === "bg" ? "похвали" : "praise"}:{" "}
-                  {summaryPayload.classificationMeta.positiveCount},{" "}
-                  {lang === "bg" ? "забележки" : "remarks"}:{" "}
-                  {summaryPayload.classificationMeta.negativeCount})
-                  {summaryPayload.jobStatus === "pending"
-                    ? lang === "bg"
-                      ? " — обновяване…"
-                      : " — updating…"
-                    : null}
-                </p>
-                <div className="whitespace-pre-wrap rounded border border-neutral-100 bg-neutral-50 p-3 text-neutral-900">
+              <div className="space-y-3 text-sm">
+                <div className="whitespace-pre-wrap text-neutral-900">
                   {summaryPayload.summary ?? (lang === "bg" ? "Още няма обобщение." : "No summary yet.")}
                 </div>
               </div>
             )}
-          </section>
-        )}
 
-        {activeSpace && (
-          <section className="rounded-lg border border-neutral-200 bg-white p-4 shadow-sm">
-            <h2 className="text-lg font-semibold">
-              {lang === "bg" ? "Вашият отзив" : "Your feedback"}
-            </h2>
-            <textarea
-              className="mt-2 w-full min-h-32 rounded border border-neutral-300 px-2 py-2 text-base text-neutral-900"
-              placeholder={lang === "bg" ? "Напишете отзив…" : "Write feedback…"}
-              value={feedbackText}
-              onChange={(e) => setFeedbackText(e.target.value)}
-            />
-            <div className="mt-2">
-              <Button onClick={handleSubmitFeedback} disabled={busy || !feedbackText.trim()}>
-                {lang === "bg" ? "Изпрати" : "Submit"}
-              </Button>
+            <div className="flex flex-col gap-2">
+              <h2 className="text-base font-medium text-neutral-900">
+                {lang === "bg" ? "Вашият отзив" : "Your feedback"}
+              </h2>
+              <textarea
+                className="w-full min-h-32 rounded-md border border-neutral-300 bg-white px-3 py-2 text-base font-light text-neutral-900"
+                placeholder={lang === "bg" ? "Напишете отзив…" : "Write feedback…"}
+                value={feedbackText}
+                onChange={(e) => setFeedbackText(e.target.value)}
+              />
+              <div>
+                <Button onClick={handleSubmitFeedback} disabled={busy || !feedbackText.trim()}>
+                  {lang === "bg" ? "Изпрати" : "Submit"}
+                </Button>
+              </div>
             </div>
-          </section>
+          </div>
         )}
 
         {status && <p className="text-sm text-neutral-700">{status}</p>}
