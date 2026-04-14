@@ -32,6 +32,14 @@ body {
   @apply has-[dialog:open]:overflow-hidden;
 }
 
+/* `type="search"` composer: hide WebKit clear/decoration (field is not a site search). */
+input[type="search"].composer-field::-webkit-search-cancel-button,
+input[type="search"].composer-field::-webkit-search-decoration {
+  -webkit-appearance: none;
+  appearance: none;
+  display: none;
+}
+
 @utility card {
   @apply rounded-xl border border-neutral-200 bg-white shadow-xs transition-all duration-200;
 }

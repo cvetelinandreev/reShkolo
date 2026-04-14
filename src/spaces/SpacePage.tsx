@@ -6,9 +6,10 @@ import {
   joinSpace,
   submitFeedback,
 } from "wasp/client/operations";
-import { Button } from "../shared/components/Button";
 import { Snackbar } from "../shared/components/Snackbar";
+import { MicIcon } from "../shared/components/icons/MicIcon";
 import { OpenBookIcon } from "../shared/components/icons/OpenBookIcon";
+import { PaperPlaneIcon } from "../shared/components/icons/PaperPlaneIcon";
 import {
   JournalAppHeader,
   persistHeaderLang,
@@ -97,7 +98,6 @@ export function SpacePage() {
   > | null>(null);
 
   const slugResolveGen = useRef(0);
-
   const isNewRoute = location.pathname === "/new";
   const legacyShortCode = params.shortCode;
   const pathSlug = params.slug;
@@ -318,7 +318,6 @@ export function SpacePage() {
   async function handleSubmitFeedback() {
     if (!activeSpace || !feedbackText.trim()) return;
     setBusy(true);
-    setStatus(null);
     try {
       await submitFeedback({
         spaceId: activeSpace.spaceId,
@@ -327,14 +326,24 @@ export function SpacePage() {
         sourceType: "text",
       });
       setFeedbackText("");
-      setStatus("Feedback submitted.");
+      showToast(
+        lang === "bg" ? "Отзивът е изпратен." : "Feedback submitted.",
+      );
       const data = await getSpaceSummary({ spaceId: activeSpace.spaceId });
       setSummaryPayload(data);
     } catch {
-      setStatus("Submit failed.");
+      showToast(lang === "bg" ? "Неуспех. Опитайте отново." : "Submit failed.");
     } finally {
       setBusy(false);
     }
+  }
+
+  function handleMicClick() {
+    showToast(
+      lang === "bg"
+        ? "Гласовият вход още не е наличен."
+        : "Voice input is not available yet.",
+    );
   }
 
   async function copyTextWithFallback(text: string): Promise<boolean> {
@@ -413,8 +422,10 @@ export function SpacePage() {
     }
   }
 
+  const canSendFeedback = feedbackText.trim().length > 0;
+
   return (
-    <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-neutral-50">
+    <div className="flex min-h-0 min-w-0 w-full flex-1 flex-col overflow-hidden bg-neutral-50">
       <JournalAppHeader
         lang={lang}
         onLangChange={setLang}
@@ -431,85 +442,142 @@ export function SpacePage() {
         shareDisabled={!activeSpace}
       />
 
-      <div className="mx-auto flex min-h-0 min-w-0 w-full max-w-lg flex-1 flex-col gap-2 overflow-x-hidden overflow-y-auto overscroll-y-contain px-4 pb-10 pt-3 font-light">
+      <div className="mx-auto flex min-h-0 min-w-0 w-full max-w-lg flex-1 flex-col overflow-hidden px-4 pt-3 font-light">
         {(joinError || slugError) && (
-          <p className="text-sm text-red-600">{joinError ?? slugError}</p>
+          <p className="shrink-0 text-sm text-red-600">{joinError ?? slugError}</p>
         )}
 
-        {isNewRoute && (
-          <p className="text-sm text-neutral-600">
+        {isNewRoute && !activeSpace && (
+          <p className="shrink-0 text-sm text-neutral-600">
             {lang === "bg"
               ? "Въведете име в полето „Отзиви за“, натиснете Създай или Enter, след което споделете линка."
               : "Type a name in “Feedback for”, press Create or Enter, then share the link."}
           </p>
         )}
 
+        {status && !activeSpace && (
+          <p className="mt-2 shrink-0 text-sm text-neutral-700">{status}</p>
+        )}
+
         {activeSpace && (
-          <div className="flex flex-col gap-2">
-            <div className="flex items-center gap-2">
-              <OpenBookIcon className="h-6 w-6 shrink-0 object-contain" />
-              <h1 className="text-xl font-medium tracking-wide text-neutral-900">
-                {lang === "bg" ? "ОБЩО" : "OVERVIEW"}
-              </h1>
-            </div>
-
-            <div
-              className="flex flex-wrap items-center gap-x-6 gap-y-2 text-lg"
-              style={{ color: "#9C9C9C" }}
-            >
+          <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto overscroll-y-contain">
+            <div className="flex shrink-0 flex-col gap-3">
               <div className="flex items-center gap-2">
-                <span>{lang === "bg" ? "Похвали" : "Praise"}</span>
-                <span
-                  className="inline-flex aspect-square min-h-[2.1em] min-w-[2.1em] items-center justify-center rounded-full text-base font-normal tabular-nums text-white"
-                  style={{ backgroundColor: "#A5BB4F" }}
-                >
-                  {praiseCount}
-                </span>
+                <OpenBookIcon className="h-6 w-6 shrink-0 object-contain" />
+                <h1 className="text-xl font-medium tracking-wide text-neutral-900">
+                  {lang === "bg" ? "ОБЩО" : "OVERVIEW"}
+                </h1>
               </div>
-              <div className="flex items-center gap-2">
-                <span>{lang === "bg" ? "Забележки" : "Remarks"}</span>
-                <span
-                  className="inline-flex aspect-square min-h-[2.1em] min-w-[2.1em] items-center justify-center rounded-full text-base font-normal tabular-nums text-white"
-                  style={{ backgroundColor: "#E68C6C" }}
-                >
-                  {remarksCount}
-                </span>
-              </div>
-              {summaryPayload?.jobStatus === "pending" ? (
-                <span>{lang === "bg" ? "обновяване…" : "updating…"}</span>
-              ) : null}
-            </div>
 
-            {!summaryPayload && <p className="text-sm text-neutral-600">…</p>}
-            {summaryPayload && (
-              <div className="space-y-3 text-sm">
-                <div className="whitespace-pre-wrap text-neutral-900">
-                  {summaryPayload.summary ?? (lang === "bg" ? "Още няма обобщение." : "No summary yet.")}
+              <div
+                className="flex flex-wrap items-center gap-x-6 gap-y-2 text-lg"
+                style={{ color: "#9C9C9C" }}
+              >
+                <div className="flex items-center gap-2">
+                  <span>{lang === "bg" ? "Похвали" : "Praise"}</span>
+                  <span
+                    className="inline-flex aspect-square min-h-[2.1em] min-w-[2.1em] items-center justify-center rounded-full text-base font-normal tabular-nums text-white"
+                    style={{ backgroundColor: "#A5BB4F" }}
+                  >
+                    {praiseCount}
+                  </span>
                 </div>
+                <div className="flex items-center gap-2">
+                  <span>{lang === "bg" ? "Забележки" : "Remarks"}</span>
+                  <span
+                    className="inline-flex aspect-square min-h-[2.1em] min-w-[2.1em] items-center justify-center rounded-full text-base font-normal tabular-nums text-white"
+                    style={{ backgroundColor: "#E68C6C" }}
+                  >
+                    {remarksCount}
+                  </span>
+                </div>
+                {summaryPayload?.jobStatus === "pending" ? (
+                  <span>{lang === "bg" ? "обновяване…" : "updating…"}</span>
+                ) : null}
               </div>
-            )}
+            </div>
 
-            <div className="flex flex-col gap-2">
-              <h2 className="text-base font-medium text-neutral-900">
-                {lang === "bg" ? "Вашият отзив" : "Your feedback"}
-              </h2>
-              <textarea
-                className="w-full min-h-32 rounded-md border border-neutral-300 bg-white px-3 py-2 text-base font-light text-neutral-900"
-                placeholder={lang === "bg" ? "Напишете отзив…" : "Write feedback…"}
-                value={feedbackText}
-                onChange={(e) => setFeedbackText(e.target.value)}
-              />
-              <div>
-                <Button onClick={handleSubmitFeedback} disabled={busy || !feedbackText.trim()}>
-                  {lang === "bg" ? "Изпрати" : "Submit"}
-                </Button>
-              </div>
+            <div className="min-w-0 pt-1">
+              {!summaryPayload && (
+                <p className="text-sm text-neutral-600">…</p>
+              )}
+              {summaryPayload && (
+                <div className="whitespace-pre-wrap text-sm text-neutral-900">
+                  {summaryPayload.summary ??
+                    (lang === "bg" ? "Още няма обобщение." : "No summary yet.")}
+                </div>
+              )}
             </div>
           </div>
         )}
-
-        {status && <p className="text-sm text-neutral-700">{status}</p>}
       </div>
+
+      {activeSpace && (
+        <div className="shrink-0 border-t border-neutral-200/90 bg-neutral-50 px-4 pb-[max(0.75rem,env(safe-area-inset-bottom,0px))] pt-2">
+          <form
+            className="mx-auto max-w-lg"
+            autoComplete="off"
+            onSubmit={(e) => {
+              e.preventDefault();
+              if (feedbackText.trim()) void handleSubmitFeedback();
+            }}
+          >
+            <div className="flex items-center gap-2">
+              <input
+                type="search"
+                inputMode="text"
+                autoComplete="off"
+                autoCorrect="off"
+                autoCapitalize="off"
+                spellCheck={false}
+                name="feedback"
+                {...{
+                  "data-lpignore": "true",
+                  "data-1p-ignore": "",
+                  "data-bwignore": "",
+                }}
+                value={feedbackText}
+                onChange={(e) => setFeedbackText(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key !== "Enter" || !feedbackText.trim()) return;
+                  e.preventDefault();
+                  void handleSubmitFeedback();
+                }}
+                placeholder={
+                  lang === "bg" ? "Напишете отзив…" : "Write feedback…"
+                }
+                className="composer-field h-12 min-w-0 flex-1 rounded-full border border-neutral-300 bg-white px-4 py-3 text-base font-light text-neutral-900 shadow-sm outline-none ring-[#1583ca]/35 placeholder:text-neutral-400 focus:ring-2 focus:ring-[#1583ca]/40"
+                disabled={busy}
+                aria-label={lang === "bg" ? "Отзив" : "Feedback"}
+              />
+
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() =>
+                  canSendFeedback ? void handleSubmitFeedback() : handleMicClick()
+                }
+                className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-[#1583ca] text-white shadow-sm hover:bg-[#1478b8] active:bg-[#126da9] disabled:opacity-50"
+                aria-label={
+                  canSendFeedback
+                    ? lang === "bg"
+                      ? "Прати отзива"
+                      : "Submit feedback"
+                    : lang === "bg"
+                      ? "Гласов вход"
+                      : "Voice input"
+                }
+              >
+                {canSendFeedback ? (
+                  <PaperPlaneIcon className="h-5 w-5 text-white" />
+                ) : (
+                  <MicIcon className="h-5 w-5" />
+                )}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
 
       <Snackbar open={toast != null}>
         <span className="block whitespace-pre-wrap">{toast}</span>
