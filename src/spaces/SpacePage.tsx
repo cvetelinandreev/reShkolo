@@ -1,0 +1,461 @@
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useLocation, useNavigate, useParams } from "react-router";
+import {
+  createSpace,
+  getSpaceSummary,
+  joinSpace,
+  submitFeedback,
+} from "wasp/client/operations";
+import { Button } from "../shared/components/Button";
+import {
+  JournalAppHeader,
+  persistHeaderLang,
+  readStoredHeaderLang,
+  type HeaderLang,
+  type HeaderSpaceOption,
+} from "../shared/components/JournalAppHeader";
+
+const STORAGE_KEY = "reshkolo_spaces_v1";
+
+type LocalSpace = {
+  spaceId: string;
+  shortCode: string;
+  name: string | null;
+  contributorHandleId: string;
+};
+
+function loadSpaces(): LocalSpace[] {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw) as unknown;
+    return Array.isArray(parsed) ? (parsed as LocalSpace[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveSpaces(spaces: LocalSpace[]) {
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(spaces));
+}
+
+function displayNameForSpace(s: LocalSpace): string {
+  const n = s.name?.trim();
+  if (n) return n;
+  return s.shortCode;
+}
+
+function formatCreateSpaceFailure(error: unknown, lang: HeaderLang): string {
+  const base =
+    lang === "bg"
+      ? "Неуспешно създаване на пространство."
+      : "Could not create space.";
+  const lanHint =
+    lang === "bg"
+      ? " Ако ползвате телефон или друг компютър: в `.env.client` задайте REACT_APP_API_URL=http://<IP-на-Mac>:3001 и рестартирайте wasp start."
+      : " If you use a phone or another PC: set `REACT_APP_API_URL=http://<YOUR_MAC_LAN_IP>:3001` in `.env.client`, then restart `wasp start` (see `.env.client.example`).";
+
+  const msg = error instanceof Error ? error.message : "";
+
+  const looksUnreachable =
+    /network|fetch failed|load failed|failed to fetch|ECONNREFUSED|ERR_NETWORK|Network Error/i.test(
+      msg,
+    );
+
+  if (looksUnreachable) {
+    return base + lanHint;
+  }
+
+  if (msg && msg !== "Network Error") {
+    return `${base} (${msg})`;
+  }
+
+  return base;
+}
+
+export function SpacePage() {
+  const navigate = useNavigate();
+  const location = useLocation();
+  const params = useParams<{ slug?: string; shortCode?: string }>();
+
+  const [spaces, setSpaces] = useState<LocalSpace[]>(() => loadSpaces());
+  const [activeSpaceId, setActiveSpaceId] = useState<string | null>(null);
+  const [joinError, setJoinError] = useState<string | null>(null);
+  const [slugError, setSlugError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [newNameDraft, setNewNameDraft] = useState("");
+  const [feedbackText, setFeedbackText] = useState("");
+  const [status, setStatus] = useState<string | null>(null);
+  const [lang, setLang] = useState<HeaderLang>(() => readStoredHeaderLang());
+
+  const [summaryPayload, setSummaryPayload] = useState<Awaited<
+    ReturnType<typeof getSpaceSummary>
+  > | null>(null);
+
+  const slugResolveGen = useRef(0);
+
+  const isNewRoute = location.pathname === "/new";
+  const legacyShortCode = params.shortCode;
+  const pathSlug = params.slug;
+
+  useEffect(() => {
+    persistHeaderLang(lang);
+  }, [lang]);
+
+  useEffect(() => {
+    saveSpaces(spaces);
+  }, [spaces]);
+
+  useEffect(() => {
+    if (location.pathname !== "/") return;
+    navigate("/new", { replace: true });
+  }, [location.pathname, navigate]);
+
+  useEffect(() => {
+    setSlugError(null);
+  }, [pathSlug]);
+
+  useEffect(() => {
+    if (!legacyShortCode) return;
+    let cancelled = false;
+    void (async () => {
+      setBusy(true);
+      setJoinError(null);
+      try {
+        const res = await joinSpace({ shortCode: legacyShortCode });
+        if (cancelled) return;
+        setSpaces((prev) => {
+          const without = prev.filter((s) => s.spaceId !== res.spaceId);
+          return [
+            ...without,
+            {
+              spaceId: res.spaceId,
+              shortCode: res.shortCode,
+              name: res.spaceName,
+              contributorHandleId: res.contributorHandleId,
+            },
+          ];
+        });
+        setActiveSpaceId(res.spaceId);
+        navigate(`/${res.shortCode}`, { replace: true });
+      } catch {
+        if (!cancelled) setJoinError("Could not join this space. Check the code.");
+      } finally {
+        if (!cancelled) setBusy(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [legacyShortCode, navigate]);
+
+  useEffect(() => {
+    if (isNewRoute || legacyShortCode) {
+      return;
+    }
+    if (!pathSlug) {
+      return;
+    }
+    const code = pathSlug.toUpperCase();
+    const local = spaces.find((s) => s.shortCode === code);
+    if (local) {
+      setActiveSpaceId(local.spaceId);
+      setSlugError(null);
+      return;
+    }
+
+    const myGen = ++slugResolveGen.current;
+    let cancelled = false;
+
+    void (async () => {
+      setBusy(true);
+      setSlugError(null);
+      try {
+        const res = await joinSpace({ shortCode: code });
+        if (cancelled || myGen !== slugResolveGen.current) return;
+        setSpaces((prev) => {
+          const without = prev.filter((s) => s.spaceId !== res.spaceId);
+          return [
+            ...without,
+            {
+              spaceId: res.spaceId,
+              shortCode: res.shortCode,
+              name: res.spaceName,
+              contributorHandleId: res.contributorHandleId,
+            },
+          ];
+        });
+        setActiveSpaceId(res.spaceId);
+      } catch {
+        if (!cancelled && myGen === slugResolveGen.current) {
+          setSlugError("Unknown or invalid space link.");
+        }
+      } finally {
+        if (!cancelled && myGen === slugResolveGen.current) {
+          setBusy(false);
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [isNewRoute, legacyShortCode, pathSlug, spaces]);
+
+  useEffect(() => {
+    if (isNewRoute) {
+      setActiveSpaceId(null);
+    }
+  }, [isNewRoute]);
+
+  const activeSpace = useMemo(
+    () => spaces.find((s) => s.spaceId === activeSpaceId) ?? null,
+    [spaces, activeSpaceId],
+  );
+
+  const headerSpaces: HeaderSpaceOption[] = useMemo(
+    () =>
+      spaces.map((s) => ({
+        spaceId: s.spaceId,
+        shortCode: s.shortCode,
+        displayName: displayNameForSpace(s),
+      })),
+    [spaces],
+  );
+
+  const activeHeaderSpace: HeaderSpaceOption | null = activeSpace
+    ? {
+        spaceId: activeSpace.spaceId,
+        shortCode: activeSpace.shortCode,
+        displayName: displayNameForSpace(activeSpace),
+      }
+    : null;
+
+  useEffect(() => {
+    if (!activeSpaceId) {
+      setSummaryPayload(null);
+      return;
+    }
+    let cancelled = false;
+
+    const fetchOnce = async () => {
+      try {
+        const data = await getSpaceSummary({ spaceId: activeSpaceId });
+        if (!cancelled) setSummaryPayload(data);
+      } catch {
+        if (!cancelled) setSummaryPayload(null);
+      }
+    };
+
+    void fetchOnce();
+    const id = window.setInterval(() => {
+      void fetchOnce();
+    }, 2000);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, [activeSpaceId]);
+
+  async function handleCreateSpace() {
+    const name = newNameDraft.trim();
+    if (!name) return;
+    setBusy(true);
+    setStatus(null);
+    try {
+      const res = await createSpace({ name });
+      const entry: LocalSpace = {
+        spaceId: res.spaceId,
+        shortCode: res.shortCode,
+        name: name || null,
+        contributorHandleId: res.contributorHandleId,
+      };
+      setSpaces((prev) => [...prev.filter((s) => s.spaceId !== entry.spaceId), entry]);
+      setActiveSpaceId(entry.spaceId);
+      setNewNameDraft("");
+      setStatus(null);
+      navigate(`/${res.shortCode}`, { replace: true });
+    } catch (e) {
+      setStatus(formatCreateSpaceFailure(e, lang));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function handleSelectSpace(spaceId: string) {
+    const s = spaces.find((x) => x.spaceId === spaceId);
+    if (!s) return;
+    setActiveSpaceId(spaceId);
+    navigate(`/${s.shortCode}`);
+  }
+
+  async function handleSubmitFeedback() {
+    if (!activeSpace || !feedbackText.trim()) return;
+    setBusy(true);
+    setStatus(null);
+    try {
+      await submitFeedback({
+        spaceId: activeSpace.spaceId,
+        contributorHandleId: activeSpace.contributorHandleId,
+        text: feedbackText,
+        sourceType: "text",
+      });
+      setFeedbackText("");
+      setStatus("Feedback submitted.");
+      const data = await getSpaceSummary({ spaceId: activeSpace.spaceId });
+      setSummaryPayload(data);
+    } catch {
+      setStatus("Submit failed.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const inviteUrl = activeSpace
+    ? `${window.location.origin}/${activeSpace.shortCode}`
+    : "";
+
+  async function copyInvite() {
+    if (!inviteUrl) return;
+    await navigator.clipboard.writeText(inviteUrl);
+    setStatus("Invite link copied.");
+  }
+
+  async function shareInvite() {
+    if (!activeSpace || !summaryPayload) return;
+    const text = [
+      `Join my reShkolo space (${activeSpace.shortCode})`,
+      summaryPayload.summary ? `\nSummary: ${summaryPayload.summary}` : "",
+    ]
+      .join("")
+      .trim();
+    if (navigator.share) {
+      await navigator.share({ title: "reShkolo", text, url: inviteUrl });
+    } else {
+      await copyInvite();
+    }
+  }
+
+  async function handleHeaderShare() {
+    if (!activeSpace) return;
+    const url = `${window.location.origin}/${activeSpace.shortCode}`;
+    try {
+      if (navigator.share) {
+        await navigator.share({
+          title: "reShkolo",
+          text:
+            lang === "bg"
+              ? `Пространство (${activeSpace.shortCode})`
+              : `Space (${activeSpace.shortCode})`,
+          url,
+        });
+      } else {
+        await navigator.clipboard.writeText(url);
+        setStatus(lang === "bg" ? "Връзката е копирана." : "Link copied.");
+      }
+    } catch {
+      /* dismissed share sheet or copy failed */
+    }
+  }
+
+  return (
+    <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-neutral-50">
+      <JournalAppHeader
+        lang={lang}
+        onLangChange={setLang}
+        isNewSpaceRoute={isNewRoute}
+        newNameDraft={newNameDraft}
+        onNewNameChange={setNewNameDraft}
+        onCreateSpace={handleCreateSpace}
+        createBusy={busy}
+        activeSpace={activeHeaderSpace}
+        spaces={headerSpaces}
+        onSelectSpace={handleSelectSpace}
+        onNavigateNew={() => navigate("/new")}
+        onShareSpace={() => void handleHeaderShare()}
+        shareDisabled={!activeSpace}
+      />
+
+      <div className="mx-auto flex min-h-0 min-w-0 w-full max-w-lg flex-1 flex-col gap-6 overflow-x-hidden overflow-y-auto overscroll-y-contain px-4 py-6">
+        {(joinError || slugError) && (
+          <p className="text-sm text-red-600">{joinError ?? slugError}</p>
+        )}
+
+        {isNewRoute && (
+          <p className="text-sm text-neutral-600">
+            {lang === "bg"
+              ? "Въведете име в полето „Отзиви за“, натиснете Създай или Enter, след което споделете линка."
+              : "Type a name in “Feedback for”, press Create or Enter, then share the link."}
+          </p>
+        )}
+
+        {activeSpace && (
+          <section className="rounded-lg border border-neutral-200 bg-white p-4 shadow-sm">
+            <h2 className="text-lg font-semibold">
+              {lang === "bg" ? "Покана" : "Invite"}
+            </h2>
+            <p className="break-all text-sm text-neutral-700">{inviteUrl}</p>
+            <div className="mt-2 flex flex-wrap gap-2">
+              <Button onClick={copyInvite} disabled={busy}>
+                {lang === "bg" ? "Копирай връзка" : "Copy link"}
+              </Button>
+              <Button variant="ghost" onClick={shareInvite} disabled={busy}>
+                {lang === "bg" ? "Сподели" : "Share"}
+              </Button>
+            </div>
+          </section>
+        )}
+
+        {activeSpace && (
+          <section className="rounded-lg border border-neutral-200 bg-white p-4 shadow-sm">
+            <h2 className="text-lg font-semibold">
+              {lang === "bg" ? "Обобщение" : "Aggregated summary"}
+            </h2>
+            {!summaryPayload && <p className="text-sm text-neutral-600">…</p>}
+            {summaryPayload && (
+              <div className="mt-2 space-y-2 text-sm">
+                <p className="text-neutral-600">
+                  {lang === "bg" ? "Записи" : "Feedback recorded"}:{" "}
+                  {summaryPayload.classificationMeta.totalCount} (
+                  {lang === "bg" ? "похвали" : "praise"}:{" "}
+                  {summaryPayload.classificationMeta.positiveCount},{" "}
+                  {lang === "bg" ? "забележки" : "remarks"}:{" "}
+                  {summaryPayload.classificationMeta.negativeCount})
+                  {summaryPayload.jobStatus === "pending"
+                    ? lang === "bg"
+                      ? " — обновяване…"
+                      : " — updating…"
+                    : null}
+                </p>
+                <div className="whitespace-pre-wrap rounded border border-neutral-100 bg-neutral-50 p-3 text-neutral-900">
+                  {summaryPayload.summary ?? (lang === "bg" ? "Още няма обобщение." : "No summary yet.")}
+                </div>
+              </div>
+            )}
+          </section>
+        )}
+
+        {activeSpace && (
+          <section className="rounded-lg border border-neutral-200 bg-white p-4 shadow-sm">
+            <h2 className="text-lg font-semibold">
+              {lang === "bg" ? "Вашият отзив" : "Your feedback"}
+            </h2>
+            <textarea
+              className="mt-2 w-full min-h-32 rounded border border-neutral-300 px-2 py-2 text-base text-neutral-900"
+              placeholder={lang === "bg" ? "Напишете отзив…" : "Write feedback…"}
+              value={feedbackText}
+              onChange={(e) => setFeedbackText(e.target.value)}
+            />
+            <div className="mt-2">
+              <Button onClick={handleSubmitFeedback} disabled={busy || !feedbackText.trim()}>
+                {lang === "bg" ? "Изпрати" : "Submit"}
+              </Button>
+            </div>
+          </section>
+        )}
+
+        {status && <p className="text-sm text-neutral-700">{status}</p>}
+      </div>
+    </div>
+  );
+}

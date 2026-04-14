@@ -23,7 +23,13 @@ alwaysApply: true
 - Do not introduce tags, numeric ratings, scoring, or threshold gates in MVP.
 - Output consumed by participants is anonymous and aggregated.
 - UI shows aggregated summary only (no raw feedback list in MVP).
-- UI language is English.
+- **UI chrome** may offer a user language (e.g. English / Bulgarian) for navigation labels and controls.
+- **Aggregated summary** is shown in the **viewer's chosen language** (same preference as UI where possible), even when underlying feedback was submitted in another language.
+
+## Application shape
+
+- The product is effectively a **single main screen**: list/join/create spaces, invite, submit feedback, read the aggregate summary.
+- In code this lives in the **`SpacePage`** React component (`src/spaces/SpacePage.tsx`). Wasp registers it for **`/`** and for **`/s/:shortCode`** (invite links); after joining, the app returns to `/`. Treat it as one page, not a multi-page product.
 
 ## Aggregation pipeline constraints
 
@@ -32,6 +38,7 @@ alwaysApply: true
 - Run classification as a separate call from summary generation.
 - Append each submission to the collective feedback pool.
 - Generate updated aggregate summaries through LLM instructions.
+- **Multilingual feedback in one space:** submissions may be in any language the author uses. The aggregation layer should **ingest the mixed pool as text** and produce the summary in the **target display language** (viewer preference). No separate per-language aggregation pipeline is required for MVP; use explicit prompt instructions (e.g. “write the summary in {language}”) and rely on the model’s multilingual understanding. If quality is weak for rare mixes, iterate with optional language tagging later—not a blocker for MVP.
 - Aggregation prompts should prioritize constructive feedback and de-emphasize repetitive, low-information content.
 - If aggregation fails, keep the submitted feedback (do not roll back the row).
 

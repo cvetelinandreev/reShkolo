@@ -1,0 +1,62 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+model Space {
+  id        String   @id @default(uuid())
+  shortCode String   @unique
+  name      String?
+  createdAt DateTime @default(now())
+
+  contributorHandles ContributorHandle[]
+  feedbackEntries    FeedbackEntry[]
+  summary            SpaceSummary?
+}
+
+model ContributorHandle {
+  id        String   @id @default(uuid())
+  createdAt DateTime @default(now())
+
+  space   Space  @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+  spaceId String
+
+  feedbackEntries FeedbackEntry[]
+}
+
+// sourceType: "text" | "voice"
+// tone: "praise" | "constructive_criticism"
+model FeedbackEntry {
+  id        String   @id @default(uuid())
+  createdAt DateTime @default(now())
+
+  rawText    String
+  tone       String
+  sourceType String
+
+  space   Space  @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+  spaceId String
+
+  contributorHandle   ContributorHandle @relation(fields: [contributorHandleId], references: [id], onDelete: Cascade)
+  contributorHandleId String
+}
+
+// jobStatus: "pending" | "ready" | "failed"
+model SpaceSummary {
+  spaceId String @id
+
+  summaryText String?
+  jobStatus   String @default("pending")
+
+  totalCount    Int @default(0)
+  positiveCount Int @default(0)
+  negativeCount Int @default(0)
+
+  updatedAt DateTime?
+
+  space Space @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+}

@@ -1,0 +1,46 @@
+app reShkolo {
+  wasp: {
+    version: "^0.22.0"
+  },
+  title: "reShkolo",
+  head: [
+    "<meta name='viewport' content='width=device-width, initial-scale=1, viewport-fit=cover' />",
+    "<link rel='icon' href='/favicon.ico' />",
+  ],
+  client: {
+    rootComponent: import { App } from "@src/App",
+  }
+}
+
+// Paths are relative to the root layout (`App` + `<Outlet />`). Use segments like `new`, not `/new`, so React Router nests them correctly under `/`.
+route NewSpaceRoute { path: "new", to: SpaceMainPage }
+
+route SpaceSlugRoute { path: ":slug", to: SpaceMainPage }
+
+route RootRoute { path: "/", to: SpaceMainPage }
+
+route LegacyInviteRoute { path: "s/:shortCode", to: SpaceMainPage }
+
+page SpaceMainPage {
+  component: import { SpacePage } from "@src/spaces/SpacePage"
+}
+
+action createSpace {
+  fn: import { createSpace } from "@src/spaces/operations",
+  entities: [Space, ContributorHandle, SpaceSummary]
+}
+
+action joinSpace {
+  fn: import { joinSpace } from "@src/spaces/operations",
+  entities: [Space, ContributorHandle, SpaceSummary]
+}
+
+action submitFeedback {
+  fn: import { submitFeedback } from "@src/spaces/operations",
+  entities: [Space, ContributorHandle, FeedbackEntry, SpaceSummary]
+}
+
+query getSpaceSummary {
+  fn: import { getSpaceSummary } from "@src/spaces/operations",
+  entities: [Space, SpaceSummary]
+}
