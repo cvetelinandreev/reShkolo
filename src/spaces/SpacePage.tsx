@@ -7,6 +7,7 @@ import {
   submitFeedback,
 } from "wasp/client/operations";
 import { Button } from "../shared/components/Button";
+import { Snackbar } from "../shared/components/Snackbar";
 import {
   JournalAppHeader,
   persistHeaderLang,
@@ -86,6 +87,8 @@ export function SpacePage() {
   const [newNameDraft, setNewNameDraft] = useState("");
   const [feedbackText, setFeedbackText] = useState("");
   const [status, setStatus] = useState<string | null>(null);
+  const [toast, setToast] = useState<string | null>(null);
+  const toastTimerRef = useRef<number | null>(null);
   const [lang, setLang] = useState<HeaderLang>(() => readStoredHeaderLang());
 
   const [summaryPayload, setSummaryPayload] = useState<Awaited<
@@ -101,6 +104,25 @@ export function SpacePage() {
   useEffect(() => {
     persistHeaderLang(lang);
   }, [lang]);
+
+  useEffect(() => {
+    return () => {
+      if (toastTimerRef.current != null) {
+        window.clearTimeout(toastTimerRef.current);
+      }
+    };
+  }, []);
+
+  function showToast(message: string, durationMs = 4800) {
+    if (toastTimerRef.current != null) {
+      window.clearTimeout(toastTimerRef.current);
+    }
+    setToast(message);
+    toastTimerRef.current = window.setTimeout(() => {
+      setToast(null);
+      toastTimerRef.current = null;
+    }, durationMs);
+  }
 
   useEffect(() => {
     saveSpaces(spaces);
@@ -315,10 +337,49 @@ export function SpacePage() {
     ? `${window.location.origin}/${activeSpace.shortCode}`
     : "";
 
+  async function copyTextWithFallback(text: string): Promise<boolean> {
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text);
+        return true;
+      }
+    } catch {
+      // Continue to legacy fallback below.
+    }
+
+    try {
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.setAttribute("readonly", "true");
+      ta.style.position = "fixed";
+      ta.style.opacity = "0";
+      ta.style.pointerEvents = "none";
+      document.body.appendChild(ta);
+      ta.select();
+      const ok = document.execCommand("copy");
+      document.body.removeChild(ta);
+      return ok;
+    } catch {
+      return false;
+    }
+  }
+
   async function copyInvite() {
     if (!inviteUrl) return;
-    await navigator.clipboard.writeText(inviteUrl);
-    setStatus("Invite link copied.");
+    const copied = await copyTextWithFallback(inviteUrl);
+    if (copied) {
+      showToast(
+        lang === "bg"
+          ? "Връзката за покана е копирана."
+          : "The invite link has been copied.",
+      );
+    } else {
+      showToast(
+        lang === "bg"
+          ? "Неуспешно копиране на връзката за покана."
+          : "Could not copy the invite link.",
+      );
+    }
   }
 
   async function shareInvite() {
@@ -339,22 +400,49 @@ export function SpacePage() {
   async function handleHeaderShare() {
     if (!activeSpace) return;
     const url = `${window.location.origin}/${activeSpace.shortCode}`;
+    const title = "reShkolo";
+    const text =
+      lang === "bg"
+        ? `Пространство (${activeSpace.shortCode})`
+        : `Space (${activeSpace.shortCode})`;
+
     try {
-      if (navigator.share) {
-        await navigator.share({
-          title: "reShkolo",
-          text:
-            lang === "bg"
-              ? `Пространство (${activeSpace.shortCode})`
-              : `Space (${activeSpace.shortCode})`,
-          url,
-        });
-      } else {
-        await navigator.clipboard.writeText(url);
-        setStatus(lang === "bg" ? "Връзката е копирана." : "Link copied.");
+      if (typeof navigator.share === "function") {
+        // Prefer a minimal payload for best iOS/Safari compatibility.
+        await navigator.share({ url, title, text });
+        return;
       }
-    } catch {
-      /* dismissed share sheet or copy failed */
+
+      const copied = await copyTextWithFallback(url);
+      if (copied) {
+        showToast(
+          lang === "bg"
+            ? "Връзката е копирана. Можете да я споделите в съобщение."
+            : "The link has been copied. You can share it in a message.",
+        );
+      } else {
+        showToast(
+          lang === "bg"
+            ? "Копирането на връзката за споделяне не успя. Можете да споделите адресът на страницата с браузъра си."
+            : "Copying the share link failed. You can share the page address using your browser.",
+        );
+      }
+    } catch (err) {
+      // User canceled the native share sheet -> don't show an error.
+      if (err instanceof DOMException && err.name === "AbortError") return;
+
+      const copied = await copyTextWithFallback(url);
+      if (copied) {
+        showToast(
+          lang === "bg" ? "Връзката е копирана." : "The link has been copied.",
+        );
+      } else {
+        showToast(
+          lang === "bg"
+            ? "Неуспешно споделяне на връзката."
+            : "Could not share the link.",
+        );
+      }
     }
   }
 
@@ -456,6 +544,10 @@ export function SpacePage() {
 
         {status && <p className="text-sm text-neutral-700">{status}</p>}
       </div>
+
+      <Snackbar open={toast != null}>
+        <span className="block whitespace-pre-wrap">{toast}</span>
+      </Snackbar>
     </div>
   );
 }
