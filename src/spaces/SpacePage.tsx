@@ -7,7 +7,6 @@ import {
   submitFeedback,
 } from "wasp/client/operations";
 import { Snackbar } from "../shared/components/Snackbar";
-import { MicIcon } from "../shared/components/icons/MicIcon";
 import { OpenBookIcon } from "../shared/components/icons/OpenBookIcon";
 import { PaperPlaneIcon } from "../shared/components/icons/PaperPlaneIcon";
 import {
@@ -346,14 +345,6 @@ export function SpacePage() {
     }
   }
 
-  function handleMicClick() {
-    showToast(
-      lang === "bg"
-        ? "Гласовият вход още не е наличен."
-        : "Voice input is not available yet.",
-    );
-  }
-
   async function copyTextWithFallback(text: string): Promise<boolean> {
     try {
       if (navigator.clipboard?.writeText) {
@@ -550,26 +541,12 @@ export function SpacePage() {
 
               <button
                 type="button"
-                disabled={busy}
-                onClick={() =>
-                  canSendFeedback ? void handleSubmitFeedback() : handleMicClick()
-                }
+                disabled={busy || !canSendFeedback}
+                onClick={() => void handleSubmitFeedback()}
                 className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-[#1583ca] text-white shadow-sm hover:bg-[#1478b8] active:bg-[#126da9] disabled:opacity-50"
-                aria-label={
-                  canSendFeedback
-                    ? lang === "bg"
-                      ? "Прати отзива"
-                      : "Submit feedback"
-                    : lang === "bg"
-                      ? "Гласов вход"
-                      : "Voice input"
-                }
+                aria-label={lang === "bg" ? "Прати отзива" : "Submit feedback"}
               >
-                {canSendFeedback ? (
-                  <PaperPlaneIcon className="h-5 w-5 text-white" />
-                ) : (
-                  <MicIcon className="h-5 w-5" />
-                )}
+                <PaperPlaneIcon className="h-5 w-5 text-white" />
               </button>
             </div>
           </form>

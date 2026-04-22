@@ -61,12 +61,14 @@ function parseToneJson(raw: string): "praise" | "constructive_criticism" | null 
 export async function classifyFeedbackText(
   text: string,
 ): Promise<"praise" | "constructive_criticism"> {
-  if (!process.env.ANTHROPIC_API_KEY) {
+  if (!process.env.OPENROUTER_API_KEY && !process.env.ANTHROPIC_API_KEY) {
     return classifyHeuristic(text);
   }
 
   const model =
-    process.env.ANTHROPIC_MODEL_CLASSIFY ?? "claude-3-5-haiku-20241022";
+    process.env.OPENROUTER_MODEL_CLASSIFY ??
+    process.env.ANTHROPIC_MODEL_CLASSIFY ??
+    (process.env.OPENROUTER_API_KEY ? "openrouter/free" : "claude-3-5-haiku-20241022");
 
   try {
     const raw = await callAnthropicText({

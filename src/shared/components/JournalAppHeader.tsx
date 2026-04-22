@@ -393,11 +393,21 @@ function NewSpaceNamePicker({
   pickerBorderClass: string;
 }) {
   const hasName = newNameDraft.trim().length > 0;
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    // `autoFocus` alone can be flaky when routing/redirecting to `/new`.
+    const id = window.requestAnimationFrame(() => {
+      inputRef.current?.focus();
+    });
+    return () => window.cancelAnimationFrame(id);
+  }, []);
 
   return (
     <div ref={rootRef} className="w-full">
       <div className={pickerBorderClass}>
         <input
+          ref={inputRef}
           id={listId + "-name"}
           type="text"
           autoFocus

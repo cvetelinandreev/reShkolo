@@ -34,7 +34,7 @@ function statsOnlySummary(params: {
   return [
     `This space has ${params.total} feedback entr${params.total === 1 ? "y" : "ies"} so far.`,
     `Overall tone mix: ${params.praise} praise-oriented, ${params.critique} constructive remarks.`,
-    "Set ANTHROPIC_API_KEY to generate a short narrative aggregate summary (themes only, no quotes).",
+    "Narrative summary is disabled because no LLM key is configured. Set OPENROUTER_API_KEY (free option) or ANTHROPIC_API_KEY in .env.server, then restart `wasp start`.",
   ].join(" ");
 }
 
@@ -65,7 +65,7 @@ export async function regenerateSpaceSummary(
   const critique = entries.filter((e) => e.tone === "constructive_criticism").length;
   const total = entries.length;
 
-  if (!process.env.ANTHROPIC_API_KEY) {
+  if (!process.env.OPENROUTER_API_KEY && !process.env.ANTHROPIC_API_KEY) {
     await entities.SpaceSummary.update({
       where: { spaceId },
       data: {
@@ -78,7 +78,9 @@ export async function regenerateSpaceSummary(
   }
 
   const model =
-    process.env.ANTHROPIC_MODEL_SUMMARY ?? "claude-opus-4-20250514";
+    process.env.OPENROUTER_MODEL_SUMMARY ??
+    process.env.ANTHROPIC_MODEL_SUMMARY ??
+    (process.env.OPENROUTER_API_KEY ? "openrouter/free" : "claude-opus-4-20250514");
 
   const system = `You write the public aggregate summary for a school feedback space.
 Rules:
