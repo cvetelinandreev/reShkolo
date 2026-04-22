@@ -6,6 +6,7 @@ import {
   joinSpace,
   submitFeedback,
 } from "wasp/client/operations";
+import { SummaryAggregationDeck } from "./SummaryAggregationDeck";
 import { Snackbar } from "../shared/components/Snackbar";
 import { OpenBookIcon } from "../shared/components/icons/OpenBookIcon";
 import { PaperPlaneIcon } from "../shared/components/icons/PaperPlaneIcon";
@@ -500,11 +501,26 @@ export function SpacePage() {
               {!summaryPayload && (
                 <p className="text-sm text-neutral-600">…</p>
               )}
-              {summaryPayload && (
-                <div className="whitespace-pre-wrap text-sm text-neutral-900">
-                  {summaryPayload.summary ??
-                    (lang === "bg" ? "Още няма обобщение." : "No summary yet.")}
-                </div>
+              {summaryPayload && activeSpace && (
+                <SummaryAggregationDeck
+                  lang={lang}
+                  spaceId={activeSpace.spaceId}
+                  aggs={summaryPayload.experimentAggregations}
+                  feedbacks={summaryPayload.feedbackEntries}
+                  prompts={summaryPayload.experimentPrompts}
+                  models={summaryPayload.experimentModels}
+                  deckUpdating={summaryPayload.jobStatus === "pending"}
+                  onRefresh={async () => {
+                    try {
+                      const data = await getSpaceSummary({
+                        spaceId: activeSpace.spaceId,
+                      });
+                      setSummaryPayload(data);
+                    } catch {
+                      /* ignore */
+                    }
+                  }}
+                />
               )}
             </div>
           </div>

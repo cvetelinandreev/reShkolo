@@ -13,9 +13,56 @@ model Space {
   name      String?
   createdAt DateTime @default(now())
 
-  contributorHandles ContributorHandle[]
-  feedbackEntries    FeedbackEntry[]
-  summary            SpaceSummary?
+  contributorHandles     ContributorHandle[]
+  feedbackEntries        FeedbackEntry[]
+  summary                SpaceSummary?
+  experimentPrompts      SpaceExperimentPrompt[]
+  experimentModels       SpaceExperimentModel[]
+  summaryAggregations    SpaceSummaryAggregation[]
+}
+
+model SpaceExperimentPrompt {
+  id        String   @id @default(uuid())
+  createdAt DateTime @default(now())
+  spaceId   String
+  slug      String
+  body      String   @db.Text
+
+  space        Space                     @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+  aggregations SpaceSummaryAggregation[]
+
+  @@unique([spaceId, slug])
+}
+
+model SpaceExperimentModel {
+  id          String   @id @default(uuid())
+  createdAt   DateTime @default(now())
+  spaceId     String
+  slug        String
+  displayName String
+  modelApiId  String
+
+  space        Space                     @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+  aggregations SpaceSummaryAggregation[]
+
+  @@unique([spaceId, slug])
+}
+
+model SpaceSummaryAggregation {
+  id                  String    @id @default(uuid())
+  createdAt           DateTime  @default(now())
+  spaceId             String
+  promptId            String
+  experimentModelId String
+  summaryText         String?   @db.Text
+  jobStatus           String    @default("pending")
+  updatedAt           DateTime?
+
+  space    Space                 @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+  prompt   SpaceExperimentPrompt @relation(fields: [promptId], references: [id], onDelete: Cascade)
+  expModel SpaceExperimentModel  @relation(fields: [experimentModelId], references: [id], onDelete: Cascade)
+
+  @@unique([promptId, experimentModelId])
 }
 
 model ContributorHandle {
