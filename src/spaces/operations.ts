@@ -1,5 +1,7 @@
 import crypto from "node:crypto";
 import { HttpError } from "wasp/server";
+import type { SummaryDisplayLang } from "./aggregationShared";
+import { pickSummaryForDisplay } from "./aggregationShared";
 import type {
   CreateSpace,
   GetSpaceSummary,
@@ -10,9 +12,11 @@ import type {
 import { classifyFeedbackText } from "./classify";
 import {
   ensureExperimentDefaultsForSpace,
+  reconcileExperimentDeckWithSingleDefaultPrompt,
   regenerateExperimentAggregations,
   syncExperimentAggregationRows,
 } from "./experimentAsync";
+import { seedDefaultSummaryPromptIfMissing } from "./defaultPromptStore";
 import { regenerateSpaceSummary } from "./summaryAsync";
 
 export const TONE = {
@@ -31,12 +35,16 @@ export const JOB = {
   failed: "failed",
 } as const;
 
-const SHORT_CODE_CHARS = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ";
+const SHORT_CODE_CHARS = "23456789abcdefghjkmnpqrstuvwxyz";
 
 const SLUG_RE = /^[a-z0-9-]{1,48}$/;
 const MAX_PROMPTS = 12;
 const MAX_MODELS = 12;
 const MAX_COMBOS = 48;
+
+function normalizeSummaryDisplayLang(raw: string | undefined): SummaryDisplayLang {
+  return raw === "bg" ? "bg" : "en";
+}
 
 function makeShortCode(): string {
   let out = "";
@@ -108,6 +116,18 @@ export const createSpace: CreateSpace<
 
   await ensureExperimentDefaultsForSpace(space.id, context.entities);
 
+  await context.entities.SpaceSummary.update({
+    where: { spaceId: space.id },
+    data: { jobStatus: JOB.pending },
+  });
+  void regenerateSpaceSummary(space.id, context.entities).catch((err) => {
+    console.error("createSpace regenerateSpaceSummary failed", err);
+    void context.entities.SpaceSummary.update({
+      where: { spaceId: space.id },
+      data: { jobStatus: JOB.failed },
+    });
+  });
+
   return {
     spaceId: space.id,
     shortCode: space.shortCode,
@@ -116,7 +136,7 @@ export const createSpace: CreateSpace<
 };
 
 export const joinSpace: JoinSpace<
-  { shortCode: string },
+  { shortCode: string; displayLang?: SummaryDisplayLang },
   {
     spaceId: string;
     shortCode: string;
@@ -126,8 +146,8 @@ export const joinSpace: JoinSpace<
     updatedAt: string | null;
     contributorHandleId: string;
   }
-> = async ({ shortCode }, context) => {
-  const code = shortCode.trim().toUpperCase();
+> = async ({ shortCode, displayLang }, context) => {
+  const code = shortCode.trim().toLowerCase();
   const space = await context.entities.Space.findUnique({
     where: { shortCode: code },
   });
@@ -146,11 +166,12 @@ export const joinSpace: JoinSpace<
     throw new HttpError(500, "Space summary missing");
   }
 
+  const lang = normalizeSummaryDisplayLang(displayLang);
   return {
     spaceId: space.id,
     shortCode: space.shortCode,
     spaceName: space.name,
-    summary: agg.summaryText,
+    summary: pickSummaryForDisplay(agg, lang),
     classificationMeta: mapClassificationMeta(agg),
     updatedAt: agg.updatedAt ? agg.updatedAt.toISOString() : null,
     contributorHandleId: handle.id,
@@ -238,7 +259,7 @@ export const submitFeedback: SubmitFeedback<
 };
 
 export const getSpaceSummary: GetSpaceSummary<
-  { spaceId: string },
+  { spaceId: string; displayLang?: SummaryDisplayLang },
   {
     summary: string | null;
     classificationMeta: ReturnType<typeof mapClassificationMeta>;
@@ -246,11 +267,6 @@ export const getSpaceSummary: GetSpaceSummary<
     jobStatus: string;
     spaceName: string | null;
     shortCode: string;
-    feedbackEntries: Array<{
-      rawText: string;
-      tone: string;
-      createdAt: string;
-    }>;
     experimentAggregations: Array<{
       id: string;
       promptSlug: string;
@@ -259,6 +275,7 @@ export const getSpaceSummary: GetSpaceSummary<
       modelDisplayName: string;
       modelApiId: string;
       summaryText: string | null;
+      jobError: string | null;
       jobStatus: string;
       updatedAt: string | null;
     }>;
@@ -269,7 +286,9 @@ export const getSpaceSummary: GetSpaceSummary<
       modelApiId: string;
     }>;
   }
-> = async ({ spaceId }, context) => {
+> = async ({ spaceId, displayLang }, context) => {
+  const lang = normalizeSummaryDisplayLang(displayLang);
+  try {
   const space = await context.entities.Space.findUnique({
     where: { id: spaceId },
   });
@@ -277,7 +296,28 @@ export const getSpaceSummary: GetSpaceSummary<
     throw new HttpError(404, "Space not found");
   }
 
+  await seedDefaultSummaryPromptIfMissing(context.entities.AppSetting);
+
   await ensureExperimentDefaultsForSpace(spaceId, context.entities);
+  const reconciled = await reconcileExperimentDeckWithSingleDefaultPrompt(
+    spaceId,
+    context.entities,
+  );
+  if (reconciled) {
+    await context.entities.SpaceSummary.update({
+      where: { spaceId },
+      data: { jobStatus: JOB.pending },
+    });
+    void regenerateExperimentAggregations(spaceId, context.entities).catch(
+      (err) => {
+        console.error("reconcileExperimentDeck regenerate failed", err);
+        void context.entities.SpaceSummary.update({
+          where: { spaceId },
+          data: { jobStatus: JOB.failed },
+        });
+      },
+    );
+  }
 
   const agg = await context.entities.SpaceSummary.findUnique({
     where: { spaceId },
@@ -285,13 +325,6 @@ export const getSpaceSummary: GetSpaceSummary<
   if (!agg) {
     throw new HttpError(500, "Space summary missing");
   }
-
-  const feedbackEntries = await context.entities.FeedbackEntry.findMany({
-    where: { spaceId },
-    orderBy: { createdAt: "asc" },
-    take: 200,
-    select: { rawText: true, tone: true, createdAt: true },
-  });
 
   const [promptRows, modelRows, rawAggs] = await Promise.all([
     context.entities.SpaceExperimentPrompt.findMany({
@@ -310,6 +343,58 @@ export const getSpaceSummary: GetSpaceSummary<
     }),
   ]);
 
+  const hasLlmKeys = !!(
+    process.env.ANTHROPIC_API_KEY?.trim() ||
+    process.env.GEMINI_API_KEY?.trim() ||
+    process.env.OPENAI_API_KEY?.trim()
+  );
+  const needsBulgarianBackfill =
+    lang === "bg" &&
+    hasLlmKeys &&
+    rawAggs.length > 0 &&
+    rawAggs.some((r) => !!r.summaryText?.trim() && !r.summaryTextBg?.trim());
+
+  /** Rows were seeded as pending but generation never ran (e.g. legacy spaces). */
+  const experimentDeckStuckPending =
+    rawAggs.length > 0 &&
+    agg.jobStatus === JOB.ready &&
+    rawAggs.every(
+      (r) =>
+        r.jobStatus === JOB.pending &&
+        !r.summaryText?.trim() &&
+        !r.summaryTextBg?.trim(),
+    );
+
+  let summaryJobStatus = agg.jobStatus;
+
+  if (experimentDeckStuckPending) {
+    await context.entities.SpaceSummary.update({
+      where: { spaceId },
+      data: { jobStatus: JOB.pending },
+    });
+    summaryJobStatus = JOB.pending;
+    void regenerateExperimentAggregations(spaceId, context.entities).catch((err) => {
+      console.error("getSpaceSummary stuck experiment deck regenerate failed", err);
+      void context.entities.SpaceSummary.update({
+        where: { spaceId },
+        data: { jobStatus: JOB.failed },
+      });
+    });
+  } else if (needsBulgarianBackfill && summaryJobStatus !== JOB.pending) {
+    await context.entities.SpaceSummary.update({
+      where: { spaceId },
+      data: { jobStatus: JOB.pending },
+    });
+    summaryJobStatus = JOB.pending;
+    void regenerateExperimentAggregations(spaceId, context.entities).catch((err) => {
+      console.error("Bulgarian summary backfill regenerate failed", err);
+      void context.entities.SpaceSummary.update({
+        where: { spaceId },
+        data: { jobStatus: JOB.failed },
+      });
+    });
+  }
+
   const experimentAggregations = [...rawAggs]
     .sort((a, b) => {
       const p = a.prompt.slug.localeCompare(b.prompt.slug);
@@ -323,23 +408,19 @@ export const getSpaceSummary: GetSpaceSummary<
       modelSlug: row.expModel.slug,
       modelDisplayName: row.expModel.displayName,
       modelApiId: row.expModel.modelApiId,
-      summaryText: row.summaryText,
+      summaryText: pickSummaryForDisplay(row, lang),
+      jobError: row.jobError ?? null,
       jobStatus: row.jobStatus,
       updatedAt: row.updatedAt ? row.updatedAt.toISOString() : null,
     }));
 
   return {
-    summary: agg.summaryText,
+    summary: pickSummaryForDisplay(agg, lang),
     classificationMeta: mapClassificationMeta(agg),
     updatedAt: agg.updatedAt ? agg.updatedAt.toISOString() : null,
-    jobStatus: agg.jobStatus,
+    jobStatus: summaryJobStatus,
     spaceName: space.name,
     shortCode: space.shortCode,
-    feedbackEntries: feedbackEntries.map((e) => ({
-      rawText: e.rawText,
-      tone: e.tone,
-      createdAt: e.createdAt.toISOString(),
-    })),
     experimentAggregations,
     experimentPrompts: promptRows.map((p) => ({ slug: p.slug, body: p.body })),
     experimentModels: modelRows.map((m) => ({
@@ -348,6 +429,10 @@ export const getSpaceSummary: GetSpaceSummary<
       modelApiId: m.modelApiId,
     })),
   };
+  } catch (err) {
+    console.error("[getSpaceSummary]", { spaceId, displayLang: lang, err });
+    throw err;
+  }
 };
 
 export const saveExperimentDeck: SaveExperimentDeck<

@@ -1,6 +1,18 @@
 {
   "name": "reshkolo",
   "type": "module",
+  "engines": {
+    "node": "22.22.2"
+  },
+  "packageManager": "npm@10.9.7",
+  "scripts": {
+    "wasp": "bash scripts/with-project-node.sh wasp",
+    "db:migrate:dev": "bash scripts/with-project-node.sh wasp db migrate-dev",
+    "db:migrate:deploy": "bash scripts/with-project-node.sh npx dotenv -e .env.server -- prisma migrate deploy --schema schema.prisma",
+    "regenerate:summaries": "bash scripts/regenerate-all-summaries.sh",
+    "db:studio": "bash scripts/with-project-node.sh npx dotenv -e .env.server -- prisma studio --schema=schema.prisma --port 5555",
+    "start:phone": "bash ./scripts/start-phone-dev.sh"
+  },
   "workspaces": [
     ".wasp/out/*",
     ".wasp/out/sdk/wasp"
@@ -26,6 +38,7 @@
     "globals": "^16.1.0",
     "prettier": "^3.5.3",
     "prettier-plugin-tailwindcss": "^0.7.2",
+    "dotenv-cli": "^8.0.0",
     "prisma": "5.19.1",
     "typescript": "5.8.2",
     "typescript-eslint": "^8.32.1",

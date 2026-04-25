@@ -6,10 +6,9 @@ import {
   ComboboxOptions,
 } from "@headlessui/react";
 import {
-  ArrowPathIcon,
-  CheckIcon,
   ChevronDownIcon,
   ShareIcon,
+  TrashIcon,
   XMarkIcon,
 } from "@heroicons/react/24/outline";
 import {
@@ -81,11 +80,13 @@ type JournalAppHeaderProps = {
   newNameDraft: string;
   onNewNameChange: (value: string) => void;
   onCreateSpace: () => void;
-  createBusy: boolean;
   /** Current space when URL is /:slug */
   activeSpace: HeaderSpaceOption | null;
   spaces: HeaderSpaceOption[];
+  /** Count of spaces the user created or joined, excluding built-in app feedback (drives /new chevron). */
+  userSpaceCount: number;
   onSelectSpace: (spaceId: string) => void;
+  onDeleteSpace: (spaceId: string) => void;
   onNavigateNew: () => void;
   onShareSpace?: () => void;
   shareDisabled?: boolean;
@@ -161,39 +162,20 @@ function useOutsideClick(
 }
 
 function NewSpaceTrailingControl({
-  createBusy,
   hasName,
   listOpen,
   hasSpaces,
   listId,
-  createLabel,
   onClearName,
   onToggleList,
 }: {
-  createBusy: boolean;
   hasName: boolean;
   listOpen: boolean;
   hasSpaces: boolean;
   listId: string;
-  createLabel: string;
   onClearName: () => void;
   onToggleList: () => void;
 }) {
-  if (createBusy) {
-    return (
-      <button
-        type="button"
-        disabled
-        aria-label={createLabel}
-        title={createLabel}
-        aria-busy="true"
-        className={pickerSlotBtnClass}
-      >
-        <ArrowPathIcon className="h-4 w-4 shrink-0 animate-spin" aria-hidden />
-      </button>
-    );
-  }
-
   if (hasName) {
     return (
       <button
@@ -235,10 +217,11 @@ export function JournalAppHeader({
   newNameDraft,
   onNewNameChange,
   onCreateSpace,
-  createBusy,
   activeSpace,
   spaces,
+  userSpaceCount,
   onSelectSpace,
+  onDeleteSpace,
   onNavigateNew,
   onShareSpace,
   shareDisabled = false,
@@ -300,7 +283,7 @@ export function JournalAppHeader({
             {t.feedbackFor}
           </span>
 
-          <div className="min-w-0 flex-1">
+          <div className="min-w-0 flex-1 pl-2">
             {isNewSpaceRoute ? (
               <NewSpaceNamePicker
                 listId={listId}
@@ -311,8 +294,7 @@ export function JournalAppHeader({
                 newNameDraft={newNameDraft}
                 onNewNameChange={onNewNameChange}
                 onCreateSpace={onCreateSpace}
-                createBusy={createBusy}
-                spaces={spaces}
+                userSpaceCount={userSpaceCount}
                 pickerBorderClass={pickerBorderClass}
               />
             ) : (
@@ -322,6 +304,7 @@ export function JournalAppHeader({
                 activeSpace={activeSpace}
                 spaces={spaces}
                 onSelectSpace={onSelectSpace}
+                onDeleteSpace={onDeleteSpace}
                 onNavigateNew={onNavigateNew}
                 pickerBorderClass={pickerBorderClass}
                 inputLikeClass={inputLikeClass}
@@ -359,6 +342,7 @@ export function JournalAppHeader({
               onSelectSpace(id);
               setNewPickerListOpen(false);
             }}
+            onDelete={onDeleteSpace}
             onNew={() => setNewPickerListOpen(false)}
           />
         </div>
@@ -376,8 +360,7 @@ function NewSpaceNamePicker({
   newNameDraft,
   onNewNameChange,
   onCreateSpace,
-  createBusy,
-  spaces,
+  userSpaceCount,
   pickerBorderClass,
 }: {
   listId: string;
@@ -388,8 +371,7 @@ function NewSpaceNamePicker({
   newNameDraft: string;
   onNewNameChange: (v: string) => void;
   onCreateSpace: () => void;
-  createBusy: boolean;
-  spaces: HeaderSpaceOption[];
+  userSpaceCount: number;
   pickerBorderClass: string;
 }) {
   const hasName = newNameDraft.trim().length > 0;
@@ -426,12 +408,10 @@ function NewSpaceNamePicker({
           enterKeyHint="done"
         />
         <NewSpaceTrailingControl
-          createBusy={createBusy}
           hasName={hasName}
           listOpen={listOpen}
-          hasSpaces={spaces.length > 0}
+          hasSpaces={userSpaceCount > 0}
           listId={listId}
-          createLabel={t.createSpace}
           onClearName={() => {
             onNewNameChange("");
             onListOpenChange(false);
@@ -449,6 +429,7 @@ function ExistingSpaceCombobox({
   activeSpace,
   spaces,
   onSelectSpace,
+  onDeleteSpace,
   onNavigateNew,
   pickerBorderClass,
   inputLikeClass,
@@ -458,6 +439,7 @@ function ExistingSpaceCombobox({
   activeSpace: HeaderSpaceOption | null;
   spaces: HeaderSpaceOption[];
   onSelectSpace: (spaceId: string) => void;
+  onDeleteSpace: (spaceId: string) => void;
   onNavigateNew: () => void;
   pickerBorderClass: string;
   inputLikeClass: string;
@@ -514,7 +496,23 @@ function ExistingSpaceCombobox({
                 className="flex cursor-pointer items-center gap-2 border-b border-neutral-100 px-3 py-2.5 text-left text-[15px] text-neutral-800 last:border-b-0 data-focus:bg-blue-50 data-selected:font-semibold data-selected:text-[#1583ca]"
               >
                 <PersonIcon className="h-4 w-4 shrink-0" />
-                {s.displayName}
+                <span className="min-w-0 flex-1 truncate">{s.displayName}</span>
+                <button
+                  type="button"
+                  className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded text-neutral-500 hover:bg-neutral-100 hover:text-neutral-700"
+                  aria-label={`Delete ${s.displayName}`}
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                  }}
+                  onClick={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    onDeleteSpace(s.spaceId);
+                  }}
+                >
+                  <TrashIcon className="h-4 w-4" aria-hidden />
+                </button>
               </ComboboxOption>
             ))}
             <ComboboxOption
@@ -535,6 +533,7 @@ function SpaceListPanel({
   spaces,
   activeSpaceId,
   onPick,
+  onDelete,
   onNew,
   showNewSpaceRow,
 }: {
@@ -542,6 +541,7 @@ function SpaceListPanel({
   spaces: HeaderSpaceOption[];
   activeSpaceId: string | null;
   onPick: (id: string) => void;
+  onDelete: (id: string) => void;
   onNew: () => void;
   showNewSpaceRow: boolean;
 }) {
@@ -549,19 +549,29 @@ function SpaceListPanel({
     <ul className="max-h-56 overflow-y-auto">
       {spaces.map((s) => (
         <li key={s.spaceId} className="border-b border-neutral-100 last:border-b-0">
-          <button
-            type="button"
-            role="option"
-            onClick={() => onPick(s.spaceId)}
-            className={`flex w-full items-center gap-2 px-3 py-2.5 text-left text-[15px] ${
-              s.spaceId === activeSpaceId
-                ? "font-semibold text-[#1583ca]"
-                : "text-neutral-800 hover:bg-blue-50"
-            }`}
-          >
-            <PersonIcon className="h-4 w-4 shrink-0" />
-            {s.displayName}
-          </button>
+          <div className="flex items-center gap-1 px-1.5 py-1.5">
+            <button
+              type="button"
+              role="option"
+              onClick={() => onPick(s.spaceId)}
+              className={`flex min-w-0 flex-1 items-center gap-2 rounded px-1.5 py-1 text-left text-[15px] ${
+                s.spaceId === activeSpaceId
+                  ? "font-semibold text-[#1583ca]"
+                  : "text-neutral-800 hover:bg-blue-50"
+              }`}
+            >
+              <PersonIcon className="h-4 w-4 shrink-0" />
+              <span className="min-w-0 flex-1 truncate">{s.displayName}</span>
+            </button>
+            <button
+              type="button"
+              className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded text-neutral-500 hover:bg-neutral-100 hover:text-neutral-700"
+              aria-label={`Delete ${s.displayName}`}
+              onClick={() => onDelete(s.spaceId)}
+            >
+              <TrashIcon className="h-4 w-4" aria-hidden />
+            </button>
+          </div>
         </li>
       ))}
       {showNewSpaceRow && (

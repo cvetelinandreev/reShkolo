@@ -8,5 +8,7 @@ export default defineConfig({
     open: true,
     /** Lets phones on the same LAN open `http://<your-ip>:3000` (see `.env.client.example`). */
     host: true,
+    /** Without this, Vite may reject requests when the Host header is your LAN IP. */
+    allowedHosts: true,
   },
 })

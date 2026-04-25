@@ -1,27 +1,89 @@
+export type SummaryDisplayLang = "en" | "bg";
+
+export function pickSummaryForDisplay(
+  row: { summaryText: string | null; summaryTextBg: string | null },
+  lang: SummaryDisplayLang,
+): string | null {
+  if (lang === "bg") {
+    const bg = row.summaryTextBg?.trim();
+    if (bg) return row.summaryTextBg;
+    return row.summaryText;
+  }
+  return row.summaryText;
+}
+
 export function buildAggregationUserMessage(
-  entries: Array<{ tone: string; rawText: string }>,
+  entries: Array<{
+    contributorHandleId: string;
+    rawText: string;
+    createdAt: Date | string;
+  }>,
+  subject: string,
+  language: "English" | "Bulgarian",
 ): string {
-  const lines = entries.map((e, i) => `${i + 1}. [${e.tone}] ${e.rawText}`);
+  const lines = entries.map((e) => {
+    const timestamp =
+      typeof e.createdAt === "string" ? e.createdAt : e.createdAt.toISOString();
+    const text = e.rawText.replace(/\r?\n/g, " ").trim();
+    return `${timestamp}:${e.contributorHandleId}:${text}`;
+  });
   return [
-    "Anonymous feedback lines for one school space (server-side only; do not treat as public quotes):",
+    `Subject: ${subject}`,
+    `Language: ${language}`,
     "",
+    "Entries:",
     ...lines,
   ].join("\n");
 }
 
-/** Default narrative instructions (system prompt) for summary experiments. */
-export const DEFAULT_SUMMARY_SYSTEM_PROMPT = `You write the public aggregate summary for a school feedback space.
-Rules:
-- English only.
-- About 80 words for the narrative body (±10). Optional one short status line before it with counts is allowed and should not count toward 80 words.
-- Sandwich structure: positive themes, then concerns, then positive / forward-looking close.
-- Do NOT quote or reproduce feedback verbatim. No names. No profanity.
-- If views conflict, acknowledge both briefly and blend dominant themes.
-- If there is no substantive content yet, say so briefly.`;
+export function emptyAggregationUserMessage(
+  subject: string,
+  language: "English" | "Bulgarian",
+): string {
+  return [
+    `Subject: ${subject}`,
+    `Language: ${language}`,
+    "",
+    "Entries:",
+    "(none)",
+  ].join("\n");
+}
 
-export const BRIEF_SUMMARY_SYSTEM_PROMPT = `You write a very short public aggregate summary for a school feedback space.
-Rules:
-- English only.
-- At most 40 words for the narrative body.
-- No verbatim quotes from feedback. No names. No profanity.
-- If there is no substantive content yet, say so in one sentence.`;
+export function noLlmKeyAggregationMessage(lang: SummaryDisplayLang): string {
+  return lang === "bg"
+    ? "Няма настроен ключ за LLM. Задайте ANTHROPIC_API_KEY, GEMINI_API_KEY или OPENAI_API_KEY във .env.server."
+    : "No LLM key configured. Set ANTHROPIC_API_KEY, GEMINI_API_KEY, or OPENAI_API_KEY in .env.server.";
+}
+
+export function statsOnlySummaryMessage(params: {
+  total: number;
+  praise: number;
+  critique: number;
+  lang: SummaryDisplayLang;
+  includeNoKeyHint: boolean;
+}): string {
+  const { total, praise, critique, lang, includeNoKeyHint } = params;
+  const noKey =
+    lang === "bg"
+      ? "Разказното обобщение е изключено, защото няма настроен ключ за LLM. Задайте ANTHROPIC_API_KEY, GEMINI_API_KEY или OPENAI_API_KEY във .env.server, после рестартирайте wasp start."
+      : "Narrative summary is disabled because no LLM key is configured. Set ANTHROPIC_API_KEY, GEMINI_API_KEY, or OPENAI_API_KEY in .env.server, then restart `wasp start`.";
+
+  if (lang === "bg") {
+    const entryWord = total === 1 ? "отзив" : "отзива";
+    const parts = [
+      `До момента има ${total} ${entryWord}.`,
+      `Общ микс от тон: ${praise} похвали, ${critique} конструктивни забележки.`,
+    ];
+    if (includeNoKeyHint) parts.push(noKey);
+    return parts.join(" ");
+  }
+
+  const parts = [
+    `There ${total === 1 ? "is" : "are"} ${total} feedback entr${total === 1 ? "y" : "ies"} so far.`,
+    `Overall tone mix: ${praise} praise-oriented, ${critique} constructive remarks.`,
+  ];
+  if (includeNoKeyHint) parts.push(noKey);
+  return parts.join(" ");
+}
+
+export { DEFAULT_SUMMARY_SYSTEM_PROMPT } from "./prompts/defaultSummarySystemPrompt";

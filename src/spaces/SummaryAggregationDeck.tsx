@@ -1,4 +1,5 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { CheckIcon, ClipboardDocumentIcon, XMarkIcon } from "@heroicons/react/24/outline";
 import { saveExperimentDeck } from "wasp/client/operations";
 import type { HeaderLang } from "../shared/components/JournalAppHeader";
 
@@ -10,14 +11,9 @@ export type ExperimentAggCard = {
   modelDisplayName: string;
   modelApiId: string;
   summaryText: string | null;
+  jobError: string | null;
   jobStatus: string;
   updatedAt: string | null;
-};
-
-export type FeedbackLine = {
-  rawText: string;
-  tone: string;
-  createdAt: string;
 };
 
 type DeckPrompt = { slug: string; body: string };
@@ -27,16 +23,47 @@ type Props = {
   lang: HeaderLang;
   spaceId: string;
   aggs: ExperimentAggCard[];
-  feedbacks: FeedbackLine[];
   prompts: DeckPrompt[];
   models: DeckModel[];
   deckUpdating: boolean;
   onRefresh: () => void;
 };
 
-function toneChipClass(tone: string): string {
-  if (tone === "praise") return "bg-[#A5BB4F]/25 text-neutral-900";
-  return "bg-[#E68C6C]/20 text-neutral-900";
+/**
+ * Horizontal overflow is clipped to this box (`min-w-0` + `max-w-full`), so the
+ * parent column never grows wider than the viewport.
+ */
+/** Older failed rows stored stats copy here instead of the LLM error. */
+function isLikelyStatsOnlyDeckBody(text: string | null | undefined): boolean {
+  const t = text?.trim() ?? "";
+  if (!t) return false;
+  return (
+    t.startsWith("This space has") ||
+    t.startsWith("There is ") ||
+    t.startsWith("There are ") ||
+    t.startsWith("До момента има") ||
+    t.includes("Overall tone mix:") ||
+    t.includes("Общ микс от тон:")
+  );
+}
+
+function aggregationCardFailureText(
+  card: ExperimentAggCard,
+  failedFallback: string,
+): string {
+  const fromJob = card.jobError?.trim();
+  if (fromJob) return fromJob;
+  const fromSummary = card.summaryText?.trim();
+  if (fromSummary && !isLikelyStatsOnlyDeckBody(fromSummary)) return fromSummary;
+  return failedFallback;
+}
+
+function ContainedHorizontalScrollStrip({ children }: { children: ReactNode }) {
+  return (
+    <div className="min-w-0 w-full max-w-full overflow-x-auto overflow-y-hidden [scrollbar-width:thin]">
+      <div className="flex w-max flex-nowrap items-start gap-3 pb-1 pr-0.5">{children}</div>
+    </div>
+  );
 }
 
 function PromptBodyModal(props: {
@@ -46,10 +73,20 @@ function PromptBodyModal(props: {
   lang: HeaderLang;
   onClose: () => void;
 }) {
+  useEffect(() => {
+    if (!props.open) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") props.onClose();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [props.open, props.onClose]);
+
   if (!props.open) return null;
+  const closeAria = props.lang === "bg" ? "Затвори" : "Close";
   return (
     <div
-      className="fixed inset-0 z-50 flex items-end justify-center bg-black/45 p-0 sm:items-center sm:p-4"
+      className="fixed inset-0 z-50 flex items-start justify-center bg-black/45 px-0 pb-4 pt-[max(0.75rem,env(safe-area-inset-top))] sm:p-4 sm:pt-[max(1rem,env(safe-area-inset-top))]"
       role="dialog"
       aria-modal="true"
       aria-labelledby="prompt-modal-title"
@@ -57,23 +94,28 @@ function PromptBodyModal(props: {
       <button
         type="button"
         className="absolute inset-0 cursor-default"
-        aria-label={props.lang === "bg" ? "Затвори" : "Close"}
+        aria-label={closeAria}
         onClick={props.onClose}
       />
-      <div className="relative z-10 flex max-h-[min(85vh,36rem)] w-full max-w-lg flex-col rounded-t-2xl bg-white shadow-xl sm:rounded-2xl">
-        <div className="flex items-center justify-between border-b border-neutral-200 px-4 py-3">
-          <h2 id="prompt-modal-title" className="text-sm font-medium text-neutral-900">
+      <div className="relative z-10 flex max-h-[min(88dvh,40rem)] w-full max-w-lg flex-col overflow-hidden rounded-t-2xl bg-white shadow-xl sm:rounded-2xl">
+        <button
+          type="button"
+          onClick={props.onClose}
+          className="absolute right-3 top-3 z-20 inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-white/95 text-neutral-600 shadow-sm ring-1 ring-neutral-200 hover:bg-neutral-100 hover:text-neutral-900"
+          aria-label={closeAria}
+        >
+          <XMarkIcon className="h-5 w-5" aria-hidden />
+        </button>
+        <div className="sticky top-0 z-10 shrink-0 border-b border-neutral-200 bg-white px-4 py-3 pr-14">
+          <h2
+            id="prompt-modal-title"
+            className="min-w-0 truncate text-sm font-medium text-neutral-900"
+            title={props.title}
+          >
             {props.title}
           </h2>
-          <button
-            type="button"
-            onClick={props.onClose}
-            className="rounded-full px-3 py-1 text-sm text-[#1583ca] hover:bg-neutral-100"
-          >
-            {props.lang === "bg" ? "Затвори" : "Close"}
-          </button>
         </div>
-        <pre className="min-h-0 flex-1 overflow-y-auto whitespace-pre-wrap p-4 text-sm leading-relaxed text-neutral-800">
+        <pre className="min-h-0 flex-1 overflow-y-auto overscroll-y-contain whitespace-pre-wrap p-4 text-sm leading-relaxed text-neutral-800">
           {props.body}
         </pre>
       </div>
@@ -91,6 +133,7 @@ export function SummaryAggregationDeck(props: Props) {
   const [draftModels, setDraftModels] = useState<DeckModel[]>([]);
   const [saveBusy, setSaveBusy] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [copiedCardId, setCopiedCardId] = useState<string | null>(null);
 
   const openEditor = useCallback(() => {
     setDraftPrompts(props.prompts.map((p) => ({ ...p })));
@@ -99,16 +142,21 @@ export function SummaryAggregationDeck(props: Props) {
     setEditorOpen(true);
   }, [props.prompts, props.models]);
 
+  const anyCardPending = props.aggs.some((c) => c.jobStatus === "pending");
+  const deckBusy = props.deckUpdating || anyCardPending;
+
   const labels = useMemo(
     () =>
       props.lang === "bg"
         ? {
-            deckTitle: "Обобщения (модел × подсказка)",
+            deckTitle: "Обобщение",
+            promptPrefix: "Промпт:",
             edit: "Подсказки и модели",
-            feedbackTitle: "Всички отзиви",
             empty: "Няма карти за показване.",
             pending: "Генериране…",
-            failed: "Неуспех за тази комбинация.",
+            failedFallback: "Неуспех за тази комбинация.",
+            copyCard: "Копирай",
+            copiedCard: "Копирано",
             save: "Запази",
             cancel: "Отказ",
             addPrompt: "Нова подсказка",
@@ -121,12 +169,14 @@ export function SummaryAggregationDeck(props: Props) {
             apiId: "Model API id",
           }
         : {
-            deckTitle: "Summaries (model × prompt)",
+            deckTitle: "Summaries",
+            promptPrefix: "Prompt:",
             edit: "Prompts & models",
-            feedbackTitle: "All feedback",
             empty: "No aggregation cards yet.",
             pending: "Generating…",
-            failed: "This combination failed.",
+            failedFallback: "This combination failed.",
+            copyCard: "Copy",
+            copiedCard: "Copied",
             save: "Save",
             cancel: "Cancel",
             addPrompt: "Add prompt",
@@ -167,8 +217,55 @@ export function SummaryAggregationDeck(props: Props) {
     }
   }
 
+  function cardBodyText(card: ExperimentAggCard): string {
+    if (card.jobStatus === "pending") return labels.pending;
+    if (card.jobStatus === "failed") {
+      return aggregationCardFailureText(card, labels.failedFallback);
+    }
+    return card.summaryText?.trim() || (props.lang === "bg" ? "Няма текст." : "No text yet.");
+  }
+
+  async function copyCardText(card: ExperimentAggCard) {
+    const text = [
+      card.modelApiId,
+      `${labels.promptPrefix} ${card.promptSlug}`,
+      "",
+      cardBodyText(card),
+    ].join("\n");
+    let copied = false;
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text);
+        copied = true;
+      }
+    } catch {
+      copied = false;
+    }
+    if (!copied) {
+      try {
+        const ta = document.createElement("textarea");
+        ta.value = text;
+        ta.setAttribute("readonly", "true");
+        ta.style.position = "fixed";
+        ta.style.opacity = "0";
+        ta.style.pointerEvents = "none";
+        document.body.appendChild(ta);
+        ta.select();
+        copied = document.execCommand("copy");
+        document.body.removeChild(ta);
+      } catch {
+        copied = false;
+      }
+    }
+    if (!copied) return;
+    setCopiedCardId(card.id);
+    window.setTimeout(() => {
+      setCopiedCardId((curr) => (curr === card.id ? null : curr));
+    }, 1400);
+  }
+
   return (
-    <section className="min-w-0 space-y-3">
+    <section className="min-w-0 w-full max-w-full space-y-3">
       <div className="flex items-center justify-between gap-2">
         <h2 className="text-sm font-medium tracking-wide text-neutral-700">
           {labels.deckTitle}
@@ -176,7 +273,7 @@ export function SummaryAggregationDeck(props: Props) {
         <button
           type="button"
           onClick={openEditor}
-          disabled={props.deckUpdating || saveBusy}
+          disabled={deckBusy || saveBusy}
           className="shrink-0 rounded-full border border-neutral-300 bg-white px-3 py-1.5 text-xs font-medium text-neutral-800 shadow-sm hover:bg-neutral-50 disabled:opacity-50"
         >
           {labels.edit}
@@ -186,81 +283,80 @@ export function SummaryAggregationDeck(props: Props) {
       {props.aggs.length === 0 ? (
         <p className="text-sm text-neutral-600">{labels.empty}</p>
       ) : (
-        <div
-          className="-mx-2 flex snap-x snap-mandatory gap-3 overflow-x-auto overscroll-x-contain scroll-smooth px-2 pb-1 [scrollbar-width:thin]"
-          style={{ WebkitOverflowScrolling: "touch" }}
-        >
+        <ContainedHorizontalScrollStrip>
           {props.aggs.map((card) => (
             <article
               key={card.id}
-              className="flex w-[min(90vw,22rem)] shrink-0 snap-center snap-always flex-col rounded-2xl border border-neutral-200/90 bg-white/95 p-3 shadow-sm"
+              className="flex w-72 max-w-full shrink-0 snap-center snap-always flex-col rounded-2xl border border-neutral-200/90 bg-white/95 p-3 shadow-sm"
             >
               <header className="mb-2 shrink-0 border-b border-neutral-100 pb-2">
-                <p className="text-xs uppercase tracking-wide text-neutral-500">
-                  {card.modelDisplayName}
-                </p>
-                <button
-                  type="button"
-                  onClick={() =>
-                    setPromptModal({ slug: card.promptSlug, body: card.promptBody })
-                  }
-                  className="mt-0.5 text-left text-sm font-medium text-[#1583ca] underline-offset-2 hover:underline"
-                >
-                  {card.promptSlug}
-                </button>
+                <div className="flex min-w-0 items-start justify-between gap-2">
+                  <p
+                    className="min-w-0 flex-1 break-words text-sm font-medium leading-snug text-neutral-900"
+                    title={card.modelApiId}
+                  >
+                    {card.modelApiId}
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setPromptModal({ slug: card.promptSlug, body: card.promptBody })
+                    }
+                    className="max-w-[55%] shrink-0 pl-2 text-right text-sm font-medium text-[#1583ca] underline-offset-2 hover:underline [overflow-wrap:anywhere]"
+                  >
+                    <span className="text-neutral-500">{labels.promptPrefix}</span>{" "}
+                    {card.promptSlug}
+                  </button>
+                </div>
+                <div className="mt-1.5 flex justify-end">
+                  <button
+                    type="button"
+                    onClick={() => void copyCardText(card)}
+                    className="inline-flex items-center gap-1.5 rounded-full border border-neutral-200 px-2 py-1 text-xs font-medium text-neutral-700 hover:bg-neutral-50"
+                    aria-label={labels.copyCard}
+                    title={labels.copyCard}
+                  >
+                    {copiedCardId === card.id ? (
+                      <>
+                        <CheckIcon className="h-3.5 w-3.5" aria-hidden />
+                        {labels.copiedCard}
+                      </>
+                    ) : (
+                      <>
+                        <ClipboardDocumentIcon className="h-3.5 w-3.5" aria-hidden />
+                        {labels.copyCard}
+                      </>
+                    )}
+                  </button>
+                </div>
               </header>
 
-              <div className="min-h-[4.5rem] shrink-0 text-sm leading-snug text-neutral-900">
-                {props.deckUpdating || card.jobStatus === "pending" ? (
+              <div className="min-w-0 flex-1 text-sm leading-relaxed text-neutral-900">
+                {card.jobStatus === "pending" ? (
                   <span className="text-neutral-500">{labels.pending}</span>
                 ) : card.jobStatus === "failed" ? (
-                  <span className="text-red-600">{labels.failed}</span>
+                  <p className="whitespace-pre-wrap break-words text-sm text-red-700 [overflow-wrap:anywhere]">
+                    {aggregationCardFailureText(card, labels.failedFallback)}
+                  </p>
                 ) : (
-                  <p className="whitespace-pre-wrap">
+                  <p className="whitespace-pre-wrap break-words [overflow-wrap:anywhere]">
                     {card.summaryText?.trim() ||
                       (props.lang === "bg" ? "Няма текст." : "No text yet.")}
                   </p>
                 )}
               </div>
-
-              <div className="mt-3 min-h-0 flex-1 border-t border-neutral-100 pt-2">
-                <p className="mb-1 text-xs font-medium uppercase tracking-wide text-neutral-500">
-                  {labels.feedbackTitle}
-                </p>
-                <ul className="max-h-40 space-y-2 overflow-y-auto overscroll-y-contain pr-1 text-sm">
-                  {props.feedbacks.length === 0 ? (
-                    <li className="text-neutral-500">
-                      {props.lang === "bg" ? "Няма отзиви." : "No feedback yet."}
-                    </li>
-                  ) : (
-                    props.feedbacks.map((f, i) => (
-                      <li
-                        key={`${f.createdAt}-${i}`}
-                        className={`rounded-lg px-2 py-1.5 ${toneChipClass(f.tone)}`}
-                      >
-                        <span className="text-[0.65rem] font-medium uppercase text-neutral-600">
-                          {f.tone === "praise"
-                            ? props.lang === "bg"
-                              ? "похвала"
-                              : "praise"
-                            : props.lang === "bg"
-                              ? "забележка"
-                              : "remark"}
-                        </span>
-                        <p className="mt-0.5 whitespace-pre-wrap">{f.rawText}</p>
-                      </li>
-                    ))
-                  )}
-                </ul>
-              </div>
             </article>
           ))}
-        </div>
+        </ContainedHorizontalScrollStrip>
       )}
 
       <PromptBodyModal
         open={promptModal != null}
-        title={promptModal?.slug ?? ""}
+        title={
+          promptModal
+            ? `${labels.promptPrefix} ${promptModal.slug}`
+            : ""
+        }
         body={promptModal?.body ?? ""}
         lang={props.lang}
         onClose={() => setPromptModal(null)}

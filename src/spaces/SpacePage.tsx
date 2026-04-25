@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate, useParams } from "react-router";
 import {
   createSpace,
@@ -17,6 +17,10 @@ import {
   type HeaderLang,
   type HeaderSpaceOption,
 } from "../shared/components/JournalAppHeader";
+import {
+  isAppFeedbackSpaceShortCode,
+  joinAppFeedbackSpace,
+} from "./appFeedbackSpace";
 
 const STORAGE_KEY = "reshkolo_spaces_v1";
 
@@ -76,6 +80,89 @@ function formatCreateSpaceFailure(error: unknown, lang: HeaderLang): string {
   return base;
 }
 
+function isWaspHttpError(
+  err: unknown,
+): err is { statusCode: number; message: string } {
+  return (
+    typeof err === "object" &&
+    err !== null &&
+    "statusCode" in err &&
+    typeof (err as { statusCode: unknown }).statusCode === "number" &&
+    "message" in err &&
+    typeof (err as { message: unknown }).message === "string"
+  );
+}
+
+function isLikelyNetworkFailure(err: unknown): boolean {
+  const msg =
+    err instanceof Error
+      ? err.message
+      : typeof err === "string"
+        ? err
+        : "";
+  return (
+    /network|fetch failed|load failed|ECONNREFUSED|ERR_NETWORK|timed out|timeout/i.test(
+      msg,
+    ) || msg === "Network Error"
+  );
+}
+
+let lastGetSpaceSummaryConsoleLogAt = 0;
+
+function logGetSpaceSummaryFailureThrottled(err: unknown) {
+  const now = Date.now();
+  if (now - lastGetSpaceSummaryConsoleLogAt < 5000) return;
+  lastGetSpaceSummaryConsoleLogAt = now;
+  console.error("[SpacePage] getSpaceSummary failed", err);
+}
+
+/** Maps Wasp client / axios failures to user-visible copy (and logs for debugging). */
+function formatSummaryLoadFailure(lang: HeaderLang, err: unknown): string {
+  logGetSpaceSummaryFailureThrottled(err);
+
+  if (isWaspHttpError(err)) {
+    const { statusCode, message } = err;
+    const detail =
+      message && message.length > 0 && message.length < 220 ? ` — ${message}` : "";
+
+    if (statusCode === 404) {
+      return lang === "bg"
+        ? "Пространството не е намерено на сървъра (възможно е нулирана базата или остарял идентификатор в браузъра). Отворете отново поканата или създайте ново пространство."
+        : "Space not found on the server (the database may have been reset, or this browser still has an old space id). Open a fresh invite link or create a new space.";
+    }
+
+    if (statusCode === 500 && /summary missing/i.test(message)) {
+      return lang === "bg"
+        ? "Липсват записи за обобщение за това пространство (несъответствие в базата). Изпълнете миграции: wasp db migrate-dev"
+        : "Summary records are missing for this space (database mismatch). Run: wasp db migrate-dev";
+    }
+
+    return (
+      (lang === "bg"
+        ? "Неуспешно зареждане на обобщенията от сървъра."
+        : "The server could not return summaries.") +
+      ` (HTTP ${statusCode})` +
+      detail
+    );
+  }
+
+  if (isLikelyNetworkFailure(err)) {
+    return lang === "bg"
+      ? "Няма връзка с API сървъра. Пуснете wasp start на машината с проекта. От телефон задайте REACT_APP_API_URL=http://<IP-на-Mac>:3001 в .env.client и рестартирайте wasp start."
+      : "Cannot reach the API server. Run wasp start on the dev machine. From a phone, set REACT_APP_API_URL=http://<YOUR_MAC_LAN_IP>:3001 in .env.client and restart wasp start.";
+  }
+
+  const fallback =
+    err instanceof Error && err.message.trim().length > 0 && err.message.length < 160
+      ? ` (${err.message.trim()})`
+      : "";
+  return (
+    (lang === "bg"
+      ? "Неуспешно зареждане на обобщенията. Вижте конзолата на браузъра (F12) за подробности."
+      : "Could not load summaries. See the browser console (F12) for details.") + fallback
+  );
+}
+
 export function SpacePage() {
   const navigate = useNavigate();
   const location = useLocation();
@@ -96,8 +183,10 @@ export function SpacePage() {
   const [summaryPayload, setSummaryPayload] = useState<Awaited<
     ReturnType<typeof getSpaceSummary>
   > | null>(null);
+  const [summaryLoadError, setSummaryLoadError] = useState<string | null>(null);
 
   const slugResolveGen = useRef(0);
+  const appFeedbackJoinStoppedRef = useRef(false);
   const isNewRoute = location.pathname === "/new";
   const legacyShortCode = params.shortCode;
   const pathSlug = params.slug;
@@ -153,7 +242,10 @@ export function SpacePage() {
       setBusy(true);
       setJoinError(null);
       try {
-        const res = await joinSpace({ shortCode: legacyShortCode });
+        const res = await joinSpace({
+          shortCode: legacyShortCode,
+          displayLang: lang,
+        });
         if (cancelled) return;
         setSpaces((prev) => {
           const without = prev.filter((s) => s.spaceId !== res.spaceId);
@@ -178,7 +270,7 @@ export function SpacePage() {
     return () => {
       cancelled = true;
     };
-  }, [legacyShortCode, navigate]);
+  }, [legacyShortCode, navigate, lang]);
 
   useEffect(() => {
     if (isNewRoute || legacyShortCode) {
@@ -187,8 +279,8 @@ export function SpacePage() {
     if (!pathSlug) {
       return;
     }
-    const code = pathSlug.toUpperCase();
-    const local = spaces.find((s) => s.shortCode === code);
+    const code = pathSlug.trim().toLowerCase();
+    const local = spaces.find((s) => s.shortCode.trim().toLowerCase() === code);
     if (local) {
       setActiveSpaceId(local.spaceId);
       setSlugError(null);
@@ -202,7 +294,7 @@ export function SpacePage() {
       setBusy(true);
       setSlugError(null);
       try {
-        const res = await joinSpace({ shortCode: code });
+        const res = await joinSpace({ shortCode: code, displayLang: lang });
         if (cancelled || myGen !== slugResolveGen.current) return;
         setSpaces((prev) => {
           const without = prev.filter((s) => s.spaceId !== res.spaceId);
@@ -230,7 +322,7 @@ export function SpacePage() {
     return () => {
       cancelled = true;
     };
-  }, [isNewRoute, legacyShortCode, pathSlug, spaces]);
+  }, [isNewRoute, legacyShortCode, pathSlug, spaces, lang]);
 
   useEffect(() => {
     if (isNewRoute) {
@@ -243,15 +335,58 @@ export function SpacePage() {
     [spaces, activeSpaceId],
   );
 
-  const headerSpaces: HeaderSpaceOption[] = useMemo(
-    () =>
-      spaces.map((s) => ({
-        spaceId: s.spaceId,
-        shortCode: s.shortCode,
-        displayName: displayNameForSpace(s),
-      })),
+  const userSpaces = useMemo(
+    () => spaces.filter((s) => !isAppFeedbackSpaceShortCode(s.shortCode)),
     [spaces],
   );
+
+  const appFeedbackLocalSpace = useMemo(
+    () => spaces.find((s) => isAppFeedbackSpaceShortCode(s.shortCode)) ?? null,
+    [spaces],
+  );
+
+  useEffect(() => {
+    if (appFeedbackLocalSpace || appFeedbackJoinStoppedRef.current) return;
+
+    void joinAppFeedbackSpace(lang).then((res) => {
+      if (!res) {
+        appFeedbackJoinStoppedRef.current = true;
+        return;
+      }
+      setSpaces((prev) => {
+        if (prev.some((s) => isAppFeedbackSpaceShortCode(s.shortCode))) {
+          return prev;
+        }
+        const withoutSameId = prev.filter((s) => s.spaceId !== res.spaceId);
+        return [
+          ...withoutSameId,
+          {
+            spaceId: res.spaceId,
+            shortCode: res.shortCode,
+            name: res.spaceName,
+            contributorHandleId: res.contributorHandleId,
+          },
+        ];
+      });
+    });
+  }, [lang, appFeedbackLocalSpace]);
+
+  const headerSpaces: HeaderSpaceOption[] = useMemo(() => {
+    const userOpts = userSpaces.map((s) => ({
+      spaceId: s.spaceId,
+      shortCode: s.shortCode,
+      displayName: displayNameForSpace(s),
+    }));
+    if (!appFeedbackLocalSpace) return userOpts;
+    return [
+      ...userOpts,
+      {
+        spaceId: appFeedbackLocalSpace.spaceId,
+        shortCode: appFeedbackLocalSpace.shortCode,
+        displayName: displayNameForSpace(appFeedbackLocalSpace),
+      },
+    ];
+  }, [userSpaces, appFeedbackLocalSpace]);
 
   const activeHeaderSpace: HeaderSpaceOption | null = activeSpace
     ? {
@@ -264,32 +399,58 @@ export function SpacePage() {
   const praiseCount = summaryPayload?.classificationMeta.positiveCount ?? 0;
   const remarksCount = summaryPayload?.classificationMeta.negativeCount ?? 0;
 
+  const retryLoadSummaries = useCallback(async () => {
+    if (!activeSpaceId) return;
+    setSummaryLoadError(null);
+    try {
+      const data = await getSpaceSummary({
+        spaceId: activeSpaceId,
+        displayLang: lang,
+      });
+      setSummaryPayload(data);
+    } catch (err) {
+      setSummaryPayload(null);
+      setSummaryLoadError(formatSummaryLoadFailure(lang, err));
+    }
+  }, [activeSpaceId, lang]);
+
   useEffect(() => {
     if (!activeSpaceId) {
       setSummaryPayload(null);
+      setSummaryLoadError(null);
       return;
     }
+    setSummaryLoadError(null);
     let cancelled = false;
 
     const fetchOnce = async () => {
       try {
-        const data = await getSpaceSummary({ spaceId: activeSpaceId });
-        if (!cancelled) setSummaryPayload(data);
-      } catch {
-        if (!cancelled) setSummaryPayload(null);
+        const data = await getSpaceSummary({
+          spaceId: activeSpaceId,
+          displayLang: lang,
+        });
+        if (!cancelled) {
+          setSummaryPayload(data);
+          setSummaryLoadError(null);
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setSummaryPayload(null);
+          setSummaryLoadError(formatSummaryLoadFailure(lang, err));
+        }
       }
     };
 
     void fetchOnce();
     const id = window.setInterval(() => {
       void fetchOnce();
-    }, 2000);
+    }, 1100);
 
     return () => {
       cancelled = true;
       window.clearInterval(id);
     };
-  }, [activeSpaceId]);
+  }, [activeSpaceId, lang]);
 
   async function handleCreateSpace() {
     const name = newNameDraft.trim();
@@ -323,6 +484,17 @@ export function SpacePage() {
     navigate(`/${s.shortCode}`);
   }
 
+  function handleDeleteSpace(spaceId: string) {
+    const removingActive = activeSpaceId === spaceId;
+    setSpaces((prev) => prev.filter((s) => s.spaceId !== spaceId));
+    if (removingActive) {
+      setActiveSpaceId(null);
+      setSummaryPayload(null);
+      setSummaryLoadError(null);
+      navigate("/new");
+    }
+  }
+
   async function handleSubmitFeedback() {
     if (!activeSpace || !feedbackText.trim()) return;
     setBusy(true);
@@ -337,7 +509,10 @@ export function SpacePage() {
       showToast(
         lang === "bg" ? "Отзивът е изпратен." : "Feedback submitted.",
       );
-      const data = await getSpaceSummary({ spaceId: activeSpace.spaceId });
+      const data = await getSpaceSummary({
+        spaceId: activeSpace.spaceId,
+        displayLang: lang,
+      });
       setSummaryPayload(data);
     } catch {
       showToast(lang === "bg" ? "Неуспех. Опитайте отново." : "Submit failed.");
@@ -433,26 +608,42 @@ export function SpacePage() {
         newNameDraft={newNameDraft}
         onNewNameChange={setNewNameDraft}
         onCreateSpace={handleCreateSpace}
-        createBusy={busy}
         activeSpace={activeHeaderSpace}
         spaces={headerSpaces}
+        userSpaceCount={userSpaces.length}
         onSelectSpace={handleSelectSpace}
+        onDeleteSpace={handleDeleteSpace}
         onNavigateNew={() => navigate("/new")}
         onShareSpace={() => void handleHeaderShare()}
         shareDisabled={!activeSpace}
       />
 
-      <div className="flex min-h-0 min-w-0 w-full flex-1 flex-col overflow-hidden px-2 pt-3 font-light">
+      <div className="flex min-h-0 min-w-0 w-full max-w-full flex-1 flex-col overflow-y-auto overflow-x-hidden overscroll-y-contain px-2 pt-3 font-light [-webkit-overflow-scrolling:touch]">
         {(joinError || slugError) && (
           <p className="shrink-0 text-sm text-red-600">{joinError ?? slugError}</p>
         )}
 
         {isNewRoute && !activeSpace && (
-          <p className="shrink-0 text-sm text-neutral-600">
-            {lang === "bg"
-              ? "Въведете име в полето, натиснете Готово и след това споделете линка."
-              : "Enter the name in the field, then press Done, and then share the link."}
-          </p>
+          <div className="shrink-0 space-y-2 text-sm text-neutral-600">
+            <p>
+              {lang === "bg"
+                ? "Въведете име в полето, натиснете Готово и след това споделете линка."
+                : "Enter the name in the field, then press Done, and then share the link."}
+            </p>
+            {userSpaces.length === 0 && appFeedbackLocalSpace && (
+              <p>
+                <button
+                  type="button"
+                  className="text-left font-medium text-[#1583ca] underline decoration-[#1583ca]/40 underline-offset-2 hover:decoration-[#1583ca]"
+                  onClick={() => handleSelectSpace(appFeedbackLocalSpace.spaceId)}
+                >
+                  {lang === "bg"
+                    ? "Или дайте отзив за самото приложение reShkolo."
+                    : "Or send feedback about the reShkolo app itself."}
+                </button>
+              </p>
+            )}
+          </div>
         )}
 
         {status && !activeSpace && (
@@ -460,7 +651,7 @@ export function SpacePage() {
         )}
 
         {activeSpace && (
-          <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto overscroll-y-contain">
+          <div className="flex min-w-0 flex-col gap-3 pt-1">
             <div className="flex shrink-0 flex-col gap-3">
               <div className="flex items-center gap-2">
                 <OpenBookIcon className="h-6 w-6 shrink-0 object-contain" />
@@ -497,16 +688,29 @@ export function SpacePage() {
               </div>
             </div>
 
-            <div className="min-w-0 pt-1">
-              {!summaryPayload && (
-                <p className="text-sm text-neutral-600">…</p>
+            <div className="min-w-0 overflow-x-hidden">
+              {summaryLoadError && (
+                <div className="space-y-2">
+                  <p className="text-sm text-red-600">{summaryLoadError}</p>
+                  <button
+                    type="button"
+                    className="text-left text-sm font-medium text-[#1583ca] underline decoration-[#1583ca]/40 underline-offset-2 hover:decoration-[#1583ca]"
+                    onClick={() => void retryLoadSummaries()}
+                  >
+                    {lang === "bg" ? "Опитайте отново" : "Try again"}
+                  </button>
+                </div>
+              )}
+              {!summaryPayload && !summaryLoadError && (
+                <p className="text-sm text-neutral-600">
+                  {lang === "bg" ? "Зареждане на обобщенията…" : "Loading summaries…"}
+                </p>
               )}
               {summaryPayload && activeSpace && (
                 <SummaryAggregationDeck
                   lang={lang}
                   spaceId={activeSpace.spaceId}
                   aggs={summaryPayload.experimentAggregations}
-                  feedbacks={summaryPayload.feedbackEntries}
                   prompts={summaryPayload.experimentPrompts}
                   models={summaryPayload.experimentModels}
                   deckUpdating={summaryPayload.jobStatus === "pending"}
@@ -514,6 +718,7 @@ export function SpacePage() {
                     try {
                       const data = await getSpaceSummary({
                         spaceId: activeSpace.spaceId,
+                        displayLang: lang,
                       });
                       setSummaryPayload(data);
                     } catch {

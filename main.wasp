@@ -27,7 +27,7 @@ page SpaceMainPage {
 
 action createSpace {
   fn: import { createSpace } from "@src/spaces/operations",
-  entities: [Space, ContributorHandle, SpaceSummary, SpaceExperimentPrompt, SpaceExperimentModel, SpaceSummaryAggregation, FeedbackEntry]
+  entities: [Space, ContributorHandle, SpaceSummary, SpaceExperimentPrompt, SpaceExperimentModel, SpaceSummaryAggregation, FeedbackEntry, AppSetting]
 }
 
 action joinSpace {
@@ -47,5 +47,12 @@ action saveExperimentDeck {
 
 query getSpaceSummary {
   fn: import { getSpaceSummary } from "@src/spaces/operations",
-  entities: [Space, SpaceSummary, FeedbackEntry, SpaceSummaryAggregation, SpaceExperimentPrompt, SpaceExperimentModel]
+  entities: [Space, SpaceSummary, FeedbackEntry, SpaceSummaryAggregation, SpaceExperimentPrompt, SpaceExperimentModel, AppSetting]
+}
+
+api regenerateAllSummaries {
+  fn: import { regenerateAllSummaries } from "@src/spaces/regenerateAllSummariesApi",
+  httpRoute: (POST, "/admin/regenerate-all-summaries"),
+  entities: [Space, FeedbackEntry, SpaceSummary, SpaceExperimentPrompt, SpaceExperimentModel, SpaceSummaryAggregation],
+  auth: false
 }

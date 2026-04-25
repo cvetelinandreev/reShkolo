@@ -1,4 +1,9 @@
 import { callAnthropicText } from "../server/llm/anthropic";
+import {
+  ANTHROPIC_HAIKU_45_MODEL,
+  GEMINI_25_FLASH_LITE_MODEL,
+  OPENAI_GPT_54_MINI_MODEL,
+} from "../server/llm/modelIds";
 
 function classifyHeuristic(text: string): "praise" | "constructive_criticism" {
   const t = text.toLowerCase();
@@ -61,14 +66,18 @@ function parseToneJson(raw: string): "praise" | "constructive_criticism" | null 
 export async function classifyFeedbackText(
   text: string,
 ): Promise<"praise" | "constructive_criticism"> {
-  if (!process.env.OPENROUTER_API_KEY && !process.env.ANTHROPIC_API_KEY) {
+  const hasAnthropic = !!process.env.ANTHROPIC_API_KEY?.trim();
+  const hasGemini = !!process.env.GEMINI_API_KEY?.trim();
+  const hasOpenAI = !!process.env.OPENAI_API_KEY?.trim();
+  if (!hasAnthropic && !hasGemini && !hasOpenAI) {
     return classifyHeuristic(text);
   }
 
-  const model =
-    process.env.OPENROUTER_MODEL_CLASSIFY ??
-    process.env.ANTHROPIC_MODEL_CLASSIFY ??
-    (process.env.OPENROUTER_API_KEY ? "openrouter/free" : "claude-3-5-haiku-20241022");
+  const model = hasAnthropic
+    ? (process.env.ANTHROPIC_MODEL_CLASSIFY?.trim() || ANTHROPIC_HAIKU_45_MODEL)
+    : hasGemini
+      ? (process.env.GEMINI_MODEL_CLASSIFY?.trim() || GEMINI_25_FLASH_LITE_MODEL)
+      : (process.env.OPENAI_MODEL_CLASSIFY?.trim() || OPENAI_GPT_54_MINI_MODEL);
 
   try {
     const raw = await callAnthropicText({
