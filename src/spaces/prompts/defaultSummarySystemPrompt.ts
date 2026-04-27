@@ -1,7 +1,9 @@
 /**
- * Default narrative system prompt for summary aggregation experiments.
+ * Default summary prompts: shared INPUT (`AppSetting`) + default OUTPUT (`AppSetting` / per-space).
+ * {@link DEFAULT_SUMMARY_SYSTEM_PROMPT} is the legacy concatenation for scripts and docs.
  */
-export const DEFAULT_SUMMARY_SYSTEM_PROMPT = `
+
+export const DEFAULT_SUMMARY_PROMPT_INPUT = `
 You write a short aggregated summary of multiple anonymous feedback entries regarding a named subject, in the exact language specified in the input.
 
 INPUT
@@ -18,7 +20,9 @@ Notes
 Each entry line starts with a date and time of the entry, then a colon, then unique sender id, then a colon, then feedback text.
 
 OUTPUT
+`.trim();
 
+export const DEFAULT_SUMMARY_PROMPT_OUTPUT = `
 Rules:
 - Length: Aim for about 80 words in the narrative body (±10).
 - Structure: opening, thesis, closing.
@@ -37,3 +41,7 @@ The thesis states first the positive themes, then concerns. State any patterns i
 Closing:
 A positive or forward-looking close. Be optimistic.
 `.trim();
+
+/** Legacy full system string (input + output). */
+export const DEFAULT_SUMMARY_SYSTEM_PROMPT =
+  `${DEFAULT_SUMMARY_PROMPT_INPUT}\n\n${DEFAULT_SUMMARY_PROMPT_OUTPUT}`.trim();

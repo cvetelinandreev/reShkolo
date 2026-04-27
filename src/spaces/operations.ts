@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { devServerLog } from "../server/devLog";
 import { HttpError } from "wasp/server";
 import type { SummaryDisplayLang } from "./aggregationShared";
 import { pickSummaryForDisplay } from "./aggregationShared";
@@ -16,7 +17,11 @@ import {
   regenerateExperimentAggregations,
   syncExperimentAggregationRows,
 } from "./experimentAsync";
-import { seedDefaultSummaryPromptIfMissing } from "./defaultPromptStore";
+import {
+  getSummaryPromptInputFromDb,
+  seedSummaryPromptAppSettingsIfMissing,
+  SUMMARY_PROMPT_INPUT_KEY,
+} from "./defaultPromptStore";
 import { regenerateSpaceSummary } from "./summaryAsync";
 
 export const TONE = {
@@ -128,6 +133,13 @@ export const createSpace: CreateSpace<
     });
   });
 
+  devServerLog("createSpace", {
+    spaceId: space.id,
+    shortCode: space.shortCode,
+    nameChars: (space.name ?? "").length,
+    contributorHandleId: handle.id,
+  });
+
   return {
     spaceId: space.id,
     shortCode: space.shortCode,
@@ -152,6 +164,7 @@ export const joinSpace: JoinSpace<
     where: { shortCode: code },
   });
   if (!space) {
+    devServerLog("joinSpace.not_found", { shortCode: code });
     throw new HttpError(404, "Space not found");
   }
 
@@ -167,6 +180,13 @@ export const joinSpace: JoinSpace<
   }
 
   const lang = normalizeSummaryDisplayLang(displayLang);
+  devServerLog("joinSpace", {
+    spaceId: space.id,
+    shortCode: space.shortCode,
+    displayLang: lang,
+    contributorHandleId: handle.id,
+  });
+
   return {
     spaceId: space.id,
     shortCode: space.shortCode,
@@ -199,6 +219,7 @@ export const submitFeedback: SubmitFeedback<
     where: { id: contributorHandleId, spaceId },
   });
   if (!handle) {
+    devServerLog("submitFeedback.invalid_handle", { spaceId, contributorHandleId });
     throw new HttpError(403, "Invalid contributor handle for this space");
   }
 
@@ -248,6 +269,14 @@ export const submitFeedback: SubmitFeedback<
     });
   });
 
+  devServerLog("submitFeedback", {
+    spaceId,
+    sourceType,
+    textChars: trimmed.length,
+    tone,
+    totalCount,
+  });
+
   return {
     accepted: true,
     classificationMeta: mapClassificationMeta({
@@ -270,16 +299,20 @@ export const getSpaceSummary: GetSpaceSummary<
     experimentAggregations: Array<{
       id: string;
       promptSlug: string;
-      promptBody: string;
+      summaryPromptOutput: string;
       modelSlug: string;
       modelDisplayName: string;
       modelApiId: string;
-      summaryText: string | null;
+      summaryTextEn: string | null;
+      summaryTextBg: string | null;
+      langStatusEn: string;
+      langStatusBg: string;
       jobError: string | null;
       jobStatus: string;
       updatedAt: string | null;
     }>;
-    experimentPrompts: Array<{ slug: string; body: string }>;
+    summaryPromptInput: string;
+    summaryPrompts: Array<{ slug: string; summaryPromptOutput: string }>;
     experimentModels: Array<{
       slug: string;
       displayName: string;
@@ -296,7 +329,7 @@ export const getSpaceSummary: GetSpaceSummary<
     throw new HttpError(404, "Space not found");
   }
 
-  await seedDefaultSummaryPromptIfMissing(context.entities.AppSetting);
+  await seedSummaryPromptAppSettingsIfMissing(context.entities.AppSetting);
 
   await ensureExperimentDefaultsForSpace(spaceId, context.entities);
   const reconciled = await reconcileExperimentDeckWithSingleDefaultPrompt(
@@ -326,21 +359,22 @@ export const getSpaceSummary: GetSpaceSummary<
     throw new HttpError(500, "Space summary missing");
   }
 
-  const [promptRows, modelRows, rawAggs] = await Promise.all([
-    context.entities.SpaceExperimentPrompt.findMany({
+  const [promptRows, modelRows, rawAggs, summaryPromptInput] = await Promise.all([
+    context.entities.SpacePrompt.findMany({
       where: { spaceId },
       orderBy: { slug: "asc" },
-      select: { slug: true, body: true },
+      select: { slug: true, summaryPromptOutput: true },
     }),
-    context.entities.SpaceExperimentModel.findMany({
+    context.entities.SpaceModel.findMany({
       where: { spaceId },
       orderBy: { slug: "asc" },
       select: { slug: true, displayName: true, modelApiId: true },
     }),
     context.entities.SpaceSummaryAggregation.findMany({
       where: { spaceId },
-      include: { prompt: true, expModel: true },
+      include: { prompt: true, spaceModel: true },
     }),
+    getSummaryPromptInputFromDb(context.entities.AppSetting),
   ]);
 
   const hasLlmKeys = !!(
@@ -348,6 +382,10 @@ export const getSpaceSummary: GetSpaceSummary<
     process.env.GEMINI_API_KEY?.trim() ||
     process.env.OPENAI_API_KEY?.trim()
   );
+  // Legacy rows only: EN narrative exists but BG column was never filled.
+  // Do not use langStatusBg here — during generation EN can be ready while BG is
+  // still pending, and polling getSpaceSummary would otherwise restart regeneration
+  // every few seconds (BG UI + jobStatus ready).
   const needsBulgarianBackfill =
     lang === "bg" &&
     hasLlmKeys &&
@@ -361,6 +399,8 @@ export const getSpaceSummary: GetSpaceSummary<
     rawAggs.every(
       (r) =>
         r.jobStatus === JOB.pending &&
+        r.langStatusEn === JOB.pending &&
+        r.langStatusBg === JOB.pending &&
         !r.summaryText?.trim() &&
         !r.summaryTextBg?.trim(),
     );
@@ -399,16 +439,19 @@ export const getSpaceSummary: GetSpaceSummary<
     .sort((a, b) => {
       const p = a.prompt.slug.localeCompare(b.prompt.slug);
       if (p !== 0) return p;
-      return a.expModel.slug.localeCompare(b.expModel.slug);
+      return a.spaceModel.slug.localeCompare(b.spaceModel.slug);
     })
     .map((row) => ({
       id: row.id,
       promptSlug: row.prompt.slug,
-      promptBody: row.prompt.body,
-      modelSlug: row.expModel.slug,
-      modelDisplayName: row.expModel.displayName,
-      modelApiId: row.expModel.modelApiId,
-      summaryText: pickSummaryForDisplay(row, lang),
+      summaryPromptOutput: row.prompt.summaryPromptOutput,
+      modelSlug: row.spaceModel.slug,
+      modelDisplayName: row.spaceModel.displayName,
+      modelApiId: row.spaceModel.modelApiId,
+      summaryTextEn: row.summaryText,
+      summaryTextBg: row.summaryTextBg,
+      langStatusEn: row.langStatusEn,
+      langStatusBg: row.langStatusBg,
       jobError: row.jobError ?? null,
       jobStatus: row.jobStatus,
       updatedAt: row.updatedAt ? row.updatedAt.toISOString() : null,
@@ -422,7 +465,11 @@ export const getSpaceSummary: GetSpaceSummary<
     spaceName: space.name,
     shortCode: space.shortCode,
     experimentAggregations,
-    experimentPrompts: promptRows.map((p) => ({ slug: p.slug, body: p.body })),
+    summaryPromptInput,
+    summaryPrompts: promptRows.map((p) => ({
+      slug: p.slug,
+      summaryPromptOutput: p.summaryPromptOutput,
+    })),
     experimentModels: modelRows.map((m) => ({
       slug: m.slug,
       displayName: m.displayName,
@@ -438,11 +485,12 @@ export const getSpaceSummary: GetSpaceSummary<
 export const saveExperimentDeck: SaveExperimentDeck<
   {
     spaceId: string;
-    prompts: Array<{ slug: string; body: string }>;
+    summaryPromptInput: string;
+    prompts: Array<{ slug: string; summaryPromptOutput: string }>;
     models: Array<{ slug: string; displayName: string; modelApiId: string }>;
   },
   { ok: true }
-> = async ({ spaceId, prompts, models }, context) => {
+> = async ({ spaceId, summaryPromptInput, prompts, models }, context) => {
   const space = await context.entities.Space.findUnique({
     where: { id: spaceId },
   });
@@ -461,17 +509,25 @@ export const saveExperimentDeck: SaveExperimentDeck<
     throw new HttpError(400, "Too many prompt × model combinations");
   }
 
+  const inputTrimmed = summaryPromptInput.trim();
+  if (inputTrimmed.length < 40) {
+    throw new HttpError(400, "Shared input template is too short.");
+  }
+  if (inputTrimmed.length > 32000) {
+    throw new HttpError(400, "Shared input template is too long.");
+  }
+
   for (const p of prompts) {
     const slug = p.slug.trim().toLowerCase();
     if (!SLUG_RE.test(slug)) {
       throw new HttpError(400, "Invalid prompt slug (use lowercase letters, digits, hyphen).");
     }
-    const body = p.body.trim();
-    if (body.length < 8) {
-      throw new HttpError(400, "Each prompt needs a substantive body.");
+    const out = p.summaryPromptOutput.trim();
+    if (out.length < 8) {
+      throw new HttpError(400, "Each prompt needs substantive output rules.");
     }
-    if (body.length > 32000) {
-      throw new HttpError(400, "Prompt body is too long.");
+    if (out.length > 32000) {
+      throw new HttpError(400, "Prompt output section is too long.");
     }
   }
 
@@ -506,21 +562,27 @@ export const saveExperimentDeck: SaveExperimentDeck<
   await context.entities.SpaceSummaryAggregation.deleteMany({
     where: { spaceId },
   });
-  await context.entities.SpaceExperimentPrompt.deleteMany({
+  await context.entities.SpacePrompt.deleteMany({
     where: { spaceId },
   });
-  await context.entities.SpaceExperimentModel.deleteMany({
+  await context.entities.SpaceModel.deleteMany({
     where: { spaceId },
   });
 
-  await context.entities.SpaceExperimentPrompt.createMany({
+  await context.entities.AppSetting.upsert({
+    where: { key: SUMMARY_PROMPT_INPUT_KEY },
+    create: { key: SUMMARY_PROMPT_INPUT_KEY, value: inputTrimmed },
+    update: { value: inputTrimmed },
+  });
+
+  await context.entities.SpacePrompt.createMany({
     data: prompts.map((p) => ({
       spaceId,
       slug: p.slug.trim().toLowerCase(),
-      body: p.body.trim(),
+      summaryPromptOutput: p.summaryPromptOutput.trim(),
     })),
   });
-  await context.entities.SpaceExperimentModel.createMany({
+  await context.entities.SpaceModel.createMany({
     data: models.map((m) => ({
       spaceId,
       slug: m.slug.trim().toLowerCase(),
@@ -541,6 +603,13 @@ export const saveExperimentDeck: SaveExperimentDeck<
       where: { spaceId },
       data: { jobStatus: JOB.failed },
     });
+  });
+
+  devServerLog("saveExperimentDeck", {
+    spaceId,
+    shortCode: space.shortCode,
+    promptCount: prompts.length,
+    modelCount: models.length,
   });
 
   return { ok: true as const };

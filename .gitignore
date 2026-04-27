@@ -1,6 +1,9 @@
 .wasp/
 node_modules/
 
+# Local dev: npm run wasp:log writes here
+logs/
+
 # Ignore all dotenv files by default to prevent accidentally committing any secrets.
 # To include specific dotenv files, use the `!` operator or adjust these rules.
 .env

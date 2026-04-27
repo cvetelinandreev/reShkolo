@@ -16,17 +16,17 @@ model Space {
   contributorHandles     ContributorHandle[]
   feedbackEntries        FeedbackEntry[]
   summary                SpaceSummary?
-  experimentPrompts      SpaceExperimentPrompt[]
-  experimentModels       SpaceExperimentModel[]
-  summaryAggregations    SpaceSummaryAggregation[]
+  spacePrompts        SpacePrompt[]
+  spaceModels         SpaceModel[]
+  summaryAggregations SpaceSummaryAggregation[]
 }
 
-model SpaceExperimentPrompt {
-  id        String   @id @default(uuid())
-  createdAt DateTime @default(now())
-  spaceId   String
-  slug      String
-  body      String   @db.Text
+model SpacePrompt {
+  id                  String   @id @default(uuid())
+  createdAt           DateTime @default(now())
+  spaceId             String
+  slug                String
+  summaryPromptOutput String   @map("summary_prompt_output") @db.Text
 
   space        Space                     @relation(fields: [spaceId], references: [id], onDelete: Cascade)
   aggregations SpaceSummaryAggregation[]
@@ -34,7 +34,7 @@ model SpaceExperimentPrompt {
   @@unique([spaceId, slug])
 }
 
-model SpaceExperimentModel {
+model SpaceModel {
   id          String   @id @default(uuid())
   createdAt   DateTime @default(now())
   spaceId     String
@@ -49,22 +49,25 @@ model SpaceExperimentModel {
 }
 
 model SpaceSummaryAggregation {
-  id                  String    @id @default(uuid())
-  createdAt           DateTime  @default(now())
-  spaceId             String
-  promptId            String
-  experimentModelId String
-  summaryText         String?   @db.Text
-  summaryTextBg       String?   @db.Text
-  jobError            String?   @db.Text
-  jobStatus           String    @default("pending")
-  updatedAt           DateTime?
+  id             String    @id @default(uuid())
+  createdAt      DateTime  @default(now())
+  spaceId        String
+  promptId       String
+  spaceModelId   String
+  summaryText    String?   @db.Text
+  summaryTextBg  String?   @db.Text
+  // Per-language generation: pending | ready | failed
+  langStatusEn   String    @default("pending")
+  langStatusBg   String    @default("pending")
+  jobError       String?   @db.Text
+  jobStatus      String    @default("pending")
+  updatedAt      DateTime?
 
-  space    Space                 @relation(fields: [spaceId], references: [id], onDelete: Cascade)
-  prompt   SpaceExperimentPrompt @relation(fields: [promptId], references: [id], onDelete: Cascade)
-  expModel SpaceExperimentModel  @relation(fields: [experimentModelId], references: [id], onDelete: Cascade)
+  space      Space       @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+  prompt     SpacePrompt @relation(fields: [promptId], references: [id], onDelete: Cascade)
+  spaceModel SpaceModel  @relation(fields: [spaceModelId], references: [id], onDelete: Cascade)
 
-  @@unique([promptId, experimentModelId])
+  @@unique([promptId, spaceModelId])
 }
 
 model ContributorHandle {

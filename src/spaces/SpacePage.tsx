@@ -24,6 +24,21 @@ import {
 
 const STORAGE_KEY = "reshkolo_spaces_v1";
 
+type SpaceSummaryPayload = Awaited<ReturnType<typeof getSpaceSummary>>;
+
+/** True when space job finished and every card has finished the viewer's language (ready or failed). */
+function summariesReadyForDisplayLang(
+  data: SpaceSummaryPayload,
+  lang: HeaderLang,
+): boolean {
+  if (data.jobStatus === "pending") return false;
+  for (const a of data.experimentAggregations) {
+    const st = lang === "bg" ? a.langStatusBg : a.langStatusEn;
+    if (st === "pending") return false;
+  }
+  return true;
+}
+
 type LocalSpace = {
   spaceId: string;
   shortCode: string;
@@ -180,10 +195,12 @@ export function SpacePage() {
   const toastTimerRef = useRef<number | null>(null);
   const [lang, setLang] = useState<HeaderLang>(() => readStoredHeaderLang());
 
-  const [summaryPayload, setSummaryPayload] = useState<Awaited<
-    ReturnType<typeof getSpaceSummary>
-  > | null>(null);
+  const [summaryPayload, setSummaryPayload] = useState<SpaceSummaryPayload | null>(
+    null,
+  );
   const [summaryLoadError, setSummaryLoadError] = useState<string | null>(null);
+  /** >0 only after this client submits feedback; drives polling until summaries catch up. */
+  const [summaryPollNonce, setSummaryPollNonce] = useState(0);
 
   const slugResolveGen = useRef(0);
   const appFeedbackJoinStoppedRef = useRef(false);
@@ -418,12 +435,14 @@ export function SpacePage() {
     if (!activeSpaceId) {
       setSummaryPayload(null);
       setSummaryLoadError(null);
+      setSummaryPollNonce(0);
       return;
     }
+    setSummaryPollNonce(0);
     setSummaryLoadError(null);
     let cancelled = false;
 
-    const fetchOnce = async () => {
+    void (async () => {
       try {
         const data = await getSpaceSummary({
           spaceId: activeSpaceId,
@@ -439,18 +458,53 @@ export function SpacePage() {
           setSummaryLoadError(formatSummaryLoadFailure(lang, err));
         }
       }
-    };
-
-    void fetchOnce();
-    const id = window.setInterval(() => {
-      void fetchOnce();
-    }, 1100);
+    })();
 
     return () => {
       cancelled = true;
-      window.clearInterval(id);
     };
   }, [activeSpaceId, lang]);
+
+  useEffect(() => {
+    if (!activeSpaceId || summaryPollNonce === 0) return;
+
+    const nonceAtStart = summaryPollNonce;
+    let cancelled = false;
+    let intervalId: number | null = null;
+
+    const tick = async () => {
+      try {
+        const data = await getSpaceSummary({
+          spaceId: activeSpaceId,
+          displayLang: lang,
+        });
+        if (cancelled) return;
+        setSummaryPayload(data);
+        setSummaryLoadError(null);
+        if (summariesReadyForDisplayLang(data, lang)) {
+          if (intervalId != null) {
+            window.clearInterval(intervalId);
+            intervalId = null;
+          }
+          setSummaryPollNonce((n) => (n === nonceAtStart ? 0 : n));
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setSummaryLoadError(formatSummaryLoadFailure(lang, err));
+        }
+      }
+    };
+
+    intervalId = window.setInterval(() => {
+      void tick();
+    }, 800);
+    void tick();
+
+    return () => {
+      cancelled = true;
+      if (intervalId != null) window.clearInterval(intervalId);
+    };
+  }, [activeSpaceId, lang, summaryPollNonce]);
 
   async function handleCreateSpace() {
     const name = newNameDraft.trim();
@@ -499,21 +553,23 @@ export function SpacePage() {
     if (!activeSpace || !feedbackText.trim()) return;
     setBusy(true);
     try {
-      await submitFeedback({
+      const res = await submitFeedback({
         spaceId: activeSpace.spaceId,
         contributorHandleId: activeSpace.contributorHandleId,
         text: feedbackText,
         sourceType: "text",
       });
       setFeedbackText("");
-      showToast(
-        lang === "bg" ? "Отзивът е изпратен." : "Feedback submitted.",
+      setSummaryPayload((prev) =>
+        prev && prev.shortCode === activeSpace.shortCode
+          ? {
+              ...prev,
+              classificationMeta: res.classificationMeta,
+              jobStatus: "pending",
+            }
+          : prev,
       );
-      const data = await getSpaceSummary({
-        spaceId: activeSpace.spaceId,
-        displayLang: lang,
-      });
-      setSummaryPayload(data);
+      setSummaryPollNonce((n) => n + 1);
     } catch {
       showToast(lang === "bg" ? "Неуспех. Опитайте отново." : "Submit failed.");
     } finally {
@@ -682,9 +738,6 @@ export function SpacePage() {
                     {remarksCount}
                   </span>
                 </div>
-                {summaryPayload?.jobStatus === "pending" ? (
-                  <span>{lang === "bg" ? "обновяване…" : "updating…"}</span>
-                ) : null}
               </div>
             </div>
 
@@ -709,22 +762,7 @@ export function SpacePage() {
               {summaryPayload && activeSpace && (
                 <SummaryAggregationDeck
                   lang={lang}
-                  spaceId={activeSpace.spaceId}
                   aggs={summaryPayload.experimentAggregations}
-                  prompts={summaryPayload.experimentPrompts}
-                  models={summaryPayload.experimentModels}
-                  deckUpdating={summaryPayload.jobStatus === "pending"}
-                  onRefresh={async () => {
-                    try {
-                      const data = await getSpaceSummary({
-                        spaceId: activeSpace.spaceId,
-                        displayLang: lang,
-                      });
-                      setSummaryPayload(data);
-                    } catch {
-                      /* ignore */
-                    }
-                  }}
                 />
               )}
             </div>

@@ -37,12 +37,24 @@ function chatAssistantText(raw: unknown): string {
   return "";
 }
 
-export async function callAnthropicText(params: {
+export async function callLlmText(params: {
   model: string;
   system: string;
   messages: AnthropicMessage[];
   maxTokens: number;
+  /** When LLM_DEBUG_LOG=true, included in server logs for grep-friendly traces. */
+  debugLabel?: string;
 }): Promise<string> {
+  if (process.env.LLM_DEBUG_LOG === "true") {
+    console.log("[LLM_DEBUG]", {
+      debugLabel: params.debugLabel,
+      model: params.model,
+      maxTokens: params.maxTokens,
+      system: params.system,
+      messages: params.messages,
+    });
+  }
+
   const callGeminiOnce = async (modelName: string, key: string): Promise<string> => {
     const model = encodeURIComponent(modelName.trim());
     const res = await fetch(`${GEMINI_API}/${model}:generateContent?key=${key}`, {

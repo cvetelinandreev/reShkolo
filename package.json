@@ -7,6 +7,8 @@
   "packageManager": "npm@10.9.7",
   "scripts": {
     "wasp": "bash scripts/with-project-node.sh wasp",
+    "wasp:log": "bash scripts/wasp-start-with-log.sh",
+    "tail:wasp": "bash scripts/tail-wasp-log.sh",
     "db:migrate:dev": "bash scripts/with-project-node.sh wasp db migrate-dev",
     "db:migrate:deploy": "bash scripts/with-project-node.sh npx dotenv -e .env.server -- prisma migrate deploy --schema schema.prisma",
     "regenerate:summaries": "bash scripts/regenerate-all-summaries.sh",

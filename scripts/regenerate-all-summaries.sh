@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Trigger full summary regeneration for every space (all prompt×model cards;
 # each card updates English + Bulgarian text). The server first copies
-# AppSetting `default_summary_system_prompt` onto every space’s `default`
-# experiment prompt, then regenerates. Requires a running Wasp server.
+# AppSetting default OUTPUT template (`default_summary_prompt_output`) onto
+# every space’s `default` experiment prompt row, then regenerates. Requires a
+# running Wasp server.
 set -euo pipefail
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

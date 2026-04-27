@@ -4,11 +4,11 @@ services:
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: resholo
+      POSTGRES_DB: reshkolo
     ports:
       - "5433:5432"
     volumes:
-      - resholo_pgdata:/var/lib/postgresql/data
+      - reshkolo_pgdata:/var/lib/postgresql/data
 
 volumes:
-  resholo_pgdata:
+  reshkolo_pgdata:
