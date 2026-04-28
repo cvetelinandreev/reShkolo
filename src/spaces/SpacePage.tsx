@@ -26,19 +26,6 @@ const STORAGE_KEY = "reshkolo_spaces_v1";
 
 type SpaceSummaryPayload = Awaited<ReturnType<typeof getSpaceSummary>>;
 
-/** True when space job finished and every card has finished the viewer's language (ready or failed). */
-function summariesReadyForDisplayLang(
-  data: SpaceSummaryPayload,
-  lang: HeaderLang,
-): boolean {
-  if (data.jobStatus === "pending") return false;
-  for (const a of data.experimentAggregations) {
-    const st = lang === "bg" ? a.langStatusBg : a.langStatusEn;
-    if (st === "pending") return false;
-  }
-  return true;
-}
-
 type LocalSpace = {
   spaceId: string;
   shortCode: string;
@@ -199,8 +186,6 @@ export function SpacePage() {
     null,
   );
   const [summaryLoadError, setSummaryLoadError] = useState<string | null>(null);
-  /** >0 only after this client submits feedback; drives polling until summaries catch up. */
-  const [summaryPollNonce, setSummaryPollNonce] = useState(0);
 
   const slugResolveGen = useRef(0);
   const appFeedbackJoinStoppedRef = useRef(false);
@@ -431,14 +416,41 @@ export function SpacePage() {
     }
   }, [activeSpaceId, lang]);
 
+  const pollSummaryUntilSettled = useCallback(
+    async (spaceId: string, maxAttempts = 30, intervalMs = 1000) => {
+      for (let i = 0; i < maxAttempts; i++) {
+        try {
+          const data = await getSpaceSummary({
+            spaceId,
+            displayLang: lang,
+          });
+          setSummaryPayload(data);
+          setSummaryLoadError(null);
+          const hasPending = data.experimentAggregations.some(
+            (row) =>
+              row.jobStatus === "pending" ||
+              row.langStatusEn === "pending" ||
+              row.langStatusBg === "pending",
+          );
+          if (!hasPending) return;
+        } catch (err) {
+          setSummaryLoadError(formatSummaryLoadFailure(lang, err));
+          return;
+        }
+        await new Promise((resolve) => {
+          window.setTimeout(resolve, intervalMs);
+        });
+      }
+    },
+    [lang],
+  );
+
   useEffect(() => {
     if (!activeSpaceId) {
       setSummaryPayload(null);
       setSummaryLoadError(null);
-      setSummaryPollNonce(0);
       return;
     }
-    setSummaryPollNonce(0);
     setSummaryLoadError(null);
     let cancelled = false;
 
@@ -465,54 +477,13 @@ export function SpacePage() {
     };
   }, [activeSpaceId, lang]);
 
-  useEffect(() => {
-    if (!activeSpaceId || summaryPollNonce === 0) return;
-
-    const nonceAtStart = summaryPollNonce;
-    let cancelled = false;
-    let intervalId: number | null = null;
-
-    const tick = async () => {
-      try {
-        const data = await getSpaceSummary({
-          spaceId: activeSpaceId,
-          displayLang: lang,
-        });
-        if (cancelled) return;
-        setSummaryPayload(data);
-        setSummaryLoadError(null);
-        if (summariesReadyForDisplayLang(data, lang)) {
-          if (intervalId != null) {
-            window.clearInterval(intervalId);
-            intervalId = null;
-          }
-          setSummaryPollNonce((n) => (n === nonceAtStart ? 0 : n));
-        }
-      } catch (err) {
-        if (!cancelled) {
-          setSummaryLoadError(formatSummaryLoadFailure(lang, err));
-        }
-      }
-    };
-
-    intervalId = window.setInterval(() => {
-      void tick();
-    }, 800);
-    void tick();
-
-    return () => {
-      cancelled = true;
-      if (intervalId != null) window.clearInterval(intervalId);
-    };
-  }, [activeSpaceId, lang, summaryPollNonce]);
-
   async function handleCreateSpace() {
     const name = newNameDraft.trim();
     if (!name) return;
     setBusy(true);
     setStatus(null);
     try {
-      const res = await createSpace({ name });
+      const res = await createSpace({ name, displayLang: lang === "bg" ? "bg" : "en" });
       const entry: LocalSpace = {
         spaceId: res.spaceId,
         shortCode: res.shortCode,
@@ -558,6 +529,7 @@ export function SpacePage() {
         contributorHandleId: activeSpace.contributorHandleId,
         text: feedbackText,
         sourceType: "text",
+        displayLang: lang === "bg" ? "bg" : "en",
       });
       setFeedbackText("");
       setSummaryPayload((prev) =>
@@ -565,11 +537,10 @@ export function SpacePage() {
           ? {
               ...prev,
               classificationMeta: res.classificationMeta,
-              jobStatus: "pending",
             }
           : prev,
       );
-      setSummaryPollNonce((n) => n + 1);
+      await pollSummaryUntilSettled(activeSpace.spaceId);
     } catch {
       showToast(lang === "bg" ? "Неуспех. Опитайте отново." : "Submit failed.");
     } finally {

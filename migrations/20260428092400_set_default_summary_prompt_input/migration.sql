@@ -1,34 +1,13 @@
-/**
- * Default summary prompts: shared INPUT (`AppSetting`) + default OUTPUT (`AppSetting` / per-space).
- * {@link DEFAULT_SUMMARY_SYSTEM_PROMPT} is the legacy concatenation for scripts and docs.
- */
-
-export const DEFAULT_SUMMARY_PROMPT_INPUT = `
-You write a short aggregated summary of multiple anonymous feedback entries regarding a named subject, in the exact language specified in the input.
-
-INPUT
-Structure is always:
-- Subject: {name}
-- Language: {language}
-- (blank line)
-- Entries:
-- {timestamp}:{sender_id}:{feedback_text}
-- {timestamp}:{sender_id}:{feedback_text}
-- ...
-
-Notes
-Each entry line starts with a date and time of the entry, then a colon, then unique sender id, then a colon, then feedback text.
-
-OUTPUT
-`.trim();
-
-export const DEFAULT_SUMMARY_PROMPT_OUTPUT = `
+INSERT INTO "AppSetting" ("key", "value", "updatedAt")
+VALUES (
+  'summary_prompt_input',
+  $prompt$
 Rules:
-- Length: Aim for about 80 words in the narrative body (±10).
+- Style: Use casual, informal style, simple words, simple sentences, no slangs.
+- Length: Aim for about 40 words in the narrative body (±10).
 - Structure: opening, thesis, closing.
 - Anonymous: Do not quote or reproduce entries verbatim. Do not name or infer individuals from the text; only the display name from the wrapper may appear. No profanity.
 - Conflict resolution: If entries conflict, acknowledge both briefly and blend dominant themes. Use statistics. E.g "3 agree, 1 disagree" 
-- Simplisity: prefer simple wording
 - Context: feedback may be about teaching, school life, a product, or anything else — infer only from the text and name, never at the cost of privacy rules above.
 
 Opening:
@@ -40,8 +19,10 @@ The thesis states first the positive themes, then concerns. State any patterns i
 
 Closing:
 A positive or forward-looking close. Be optimistic.
-`.trim();
-
-/** Legacy full system string (input + output). */
-export const DEFAULT_SUMMARY_SYSTEM_PROMPT =
-  `${DEFAULT_SUMMARY_PROMPT_INPUT}\n\n${DEFAULT_SUMMARY_PROMPT_OUTPUT}`.trim();
+  $prompt$,
+  CURRENT_TIMESTAMP
+)
+ON CONFLICT ("key") DO UPDATE
+SET
+  "value" = EXCLUDED."value",
+  "updatedAt" = CURRENT_TIMESTAMP;

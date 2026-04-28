@@ -15,10 +15,9 @@ model Space {
 
   contributorHandles     ContributorHandle[]
   feedbackEntries        FeedbackEntry[]
-  summary                SpaceSummary?
+  summaries              SpaceSummary[]
   spacePrompts        SpacePrompt[]
   spaceModels         SpaceModel[]
-  summaryAggregations SpaceSummaryAggregation[]
 }
 
 model SpacePrompt {
@@ -28,8 +27,8 @@ model SpacePrompt {
   slug                String
   summaryPromptOutput String   @map("summary_prompt_output") @db.Text
 
-  space        Space                     @relation(fields: [spaceId], references: [id], onDelete: Cascade)
-  aggregations SpaceSummaryAggregation[]
+  space     Space           @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+  summaries SpaceSummary[]
 
   @@unique([spaceId, slug])
 }
@@ -42,24 +41,20 @@ model SpaceModel {
   displayName String
   modelApiId  String
 
-  space        Space                     @relation(fields: [spaceId], references: [id], onDelete: Cascade)
-  aggregations SpaceSummaryAggregation[]
+  space     Space           @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+  summaries SpaceSummary[]
 
   @@unique([spaceId, slug])
 }
 
-model SpaceSummaryAggregation {
+model SpaceSummary {
   id             String    @id @default(uuid())
   createdAt      DateTime  @default(now())
   spaceId        String
   promptId       String
   spaceModelId   String
+  language       String
   summaryText    String?   @db.Text
-  summaryTextBg  String?   @db.Text
-  // Per-language generation: pending | ready | failed
-  langStatusEn   String    @default("pending")
-  langStatusBg   String    @default("pending")
-  jobError       String?   @db.Text
   jobStatus      String    @default("pending")
   updatedAt      DateTime?
 
@@ -67,7 +62,7 @@ model SpaceSummaryAggregation {
   prompt     SpacePrompt @relation(fields: [promptId], references: [id], onDelete: Cascade)
   spaceModel SpaceModel  @relation(fields: [spaceModelId], references: [id], onDelete: Cascade)
 
-  @@unique([promptId, spaceModelId])
+  @@unique([promptId, spaceModelId, language])
 }
 
 model ContributorHandle {
@@ -95,23 +90,6 @@ model FeedbackEntry {
 
   contributorHandle   ContributorHandle @relation(fields: [contributorHandleId], references: [id], onDelete: Cascade)
   contributorHandleId String
-}
-
-// jobStatus: "pending" | "ready" | "failed"
-model SpaceSummary {
-  spaceId String @id
-
-  summaryText   String?
-  summaryTextBg String?
-  jobStatus   String @default("pending")
-
-  totalCount    Int @default(0)
-  positiveCount Int @default(0)
-  negativeCount Int @default(0)
-
-  updatedAt DateTime?
-
-  space Space @relation(fields: [spaceId], references: [id], onDelete: Cascade)
 }
 
 model AppSetting {

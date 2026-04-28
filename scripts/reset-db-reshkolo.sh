@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# Wipe all application rows and recreate the canonical in-app feedback space
-# (shortCode `reshkolo`, id fixed in migrations — must match `appFeedbackSpace.ts`).
+# Reset DB by re-running all Prisma migrations from scratch.
 #
 # Usage (from repo root):
 #   bash scripts/reset-db-reshkolo.sh
@@ -17,44 +16,8 @@ if [[ ! -f .env.server ]]; then
   exit 1
 fi
 
-echo "Resetting database (truncating space data, preserving AppSetting rows, then seeding reshkolo space)..."
+echo "Resetting database via Prisma migrations..."
 
-bash scripts/with-project-node.sh npx dotenv -e .env.server -- prisma db execute --schema=schema.prisma --stdin <<'SQL'
--- Keep _prisma_migrations and AppSetting (see `defaultPromptStore.ts` / getSpaceSummary seeding).
-TRUNCATE TABLE "Space" CASCADE;
+bash scripts/with-project-node.sh npx dotenv -e .env.server -- prisma migrate reset --force --skip-seed --schema schema.prisma
 
--- IDs and shortCode must match `APP_FEEDBACK_SPACE_ID` / `APP_FEEDBACK_SPACE_SHORT_CODE` in
--- `src/spaces/appFeedbackSpace.ts` and historical migrations.
-INSERT INTO "Space" ("id", "shortCode", "name", "createdAt")
-VALUES (
-  'a1b2c3d4-0000-4000-8000-000000000001',
-  'reshkolo',
-  'reShkolo',
-  CURRENT_TIMESTAMP
-);
-
-INSERT INTO "SpaceSummary" (
-  "spaceId",
-  "summaryText",
-  "summaryTextBg",
-  "jobStatus",
-  "totalCount",
-  "positiveCount",
-  "negativeCount",
-  "updatedAt"
-)
-VALUES (
-  'a1b2c3d4-0000-4000-8000-000000000001',
-  NULL,
-  NULL,
-  'ready',
-  0,
-  0,
-  0,
-  NULL
-);
-SQL
-
-bash scripts/with-project-node.sh node scripts/ensure-app-settings.mjs
-
-echo "Done. Join path: /reshkolo. AppSetting rows were preserved; missing default prompt key was back-filled if needed."
+echo "Done. Database was wiped and rebuilt from migrations."

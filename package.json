@@ -12,8 +12,10 @@
     "db:migrate:dev": "bash scripts/with-project-node.sh wasp db migrate-dev",
     "db:migrate:deploy": "bash scripts/with-project-node.sh npx dotenv -e .env.server -- prisma migrate deploy --schema schema.prisma",
     "regenerate:summaries": "bash scripts/regenerate-all-summaries.sh",
+    "prompt:push-and-regenerate-all": "bash scripts/with-project-node.sh npx dotenv -e .env.server -- npx tsx scripts/push-default-prompt-and-regenerate-all.ts",
     "db:studio": "bash scripts/with-project-node.sh npx dotenv -e .env.server -- prisma studio --schema=schema.prisma --port 5555",
-    "start:phone": "bash ./scripts/start-phone-dev.sh"
+    "start:phone": "bash ./scripts/start-phone-dev.sh",
+    "test": "bash scripts/with-project-node.sh npx tsx --test src/**/*.test.ts"
   },
   "workspaces": [
     ".wasp/out/*",
@@ -34,14 +36,15 @@
     "@tailwindcss/vite": "^4.1.18",
     "@types/react": "^19.2.7",
     "@types/react-dom": "^19.2.3",
+    "dotenv-cli": "^8.0.0",
     "eslint": "^9.27.0",
     "eslint-config-prettier": "^10.1.5",
     "eslint-plugin-react": "^7.37.5",
     "globals": "^16.1.0",
     "prettier": "^3.5.3",
     "prettier-plugin-tailwindcss": "^0.7.2",
-    "dotenv-cli": "^8.0.0",
     "prisma": "5.19.1",
+    "tsx": "^4.21.0",
     "typescript": "5.8.2",
     "typescript-eslint": "^8.32.1",
     "vite": "^7.0.6"

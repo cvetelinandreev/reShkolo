@@ -3,13 +3,13 @@ import { callLlmText } from "../server/llm/anthropic";
 import {
   ANTHROPIC_SONNET_46_MODEL,
   GEMINI_25_FLASH_LITE_MODEL,
-  OPENAI_GPT_55_MODEL,
+  GROQ_LLAMA_4_SCOUT_MODEL,
+  OPENAI_GPT_55_MINI_MODEL,
 } from "../server/llm/modelIds";
 import {
   buildAggregationUserMessage,
   emptyAggregationUserMessage,
   noLlmKeyAggregationMessage,
-  statsOnlySummaryMessage,
 } from "./aggregationShared";
 import {
   getDefaultSummaryPromptOutputFromDb,
@@ -100,17 +100,6 @@ export type ExperimentEntities = {
       update: { value?: string };
     }) => Promise<unknown>;
   };
-  SpaceSummary: {
-    update: (args: {
-      where: { spaceId: string };
-      data: {
-        summaryText?: string | null;
-        summaryTextBg?: string | null;
-        jobStatus: string;
-        updatedAt: Date | null;
-      };
-    }) => Promise<unknown>;
-  };
   SpacePrompt: {
     count: (args: { where: { spaceId: string } }) => Promise<number>;
     findMany: (args: {
@@ -151,15 +140,13 @@ export type ExperimentEntities = {
     }) => Promise<unknown>;
     deleteMany: (args: { where: { spaceId: string } }) => Promise<unknown>;
   };
-  SpaceSummaryAggregation: {
+  SpaceSummary: {
     deleteMany: (args: { where: { spaceId: string } }) => Promise<unknown>;
     updateMany: (args: {
-      where: { spaceId: string };
+      where: { spaceId: string; language?: string; promptId?: string; spaceModelId?: string };
       data: {
         jobStatus: string;
-        jobError?: string | null;
-        langStatusEn?: string;
-        langStatusBg?: string;
+        summaryText?: string | null;
         updatedAt: Date | null;
       };
     }) => Promise<{ count: number }>;
@@ -168,6 +155,7 @@ export type ExperimentEntities = {
         spaceId: string;
         promptId: string;
         spaceModelId: string;
+        language: string;
         jobStatus: string;
       }>;
     }) => Promise<unknown>;
@@ -180,13 +168,11 @@ export type ExperimentEntities = {
     }) => Promise<
       Array<{
         id: string;
+        spaceId: string;
         promptId: string;
         spaceModelId: string;
+        language: string;
         summaryText: string | null;
-        summaryTextBg: string | null;
-        langStatusEn: string;
-        langStatusBg: string;
-        jobError: string | null;
         jobStatus: string;
         prompt: { slug: string; summaryPromptOutput: string };
         spaceModel: { slug: string; displayName: string; modelApiId: string };
@@ -196,10 +182,6 @@ export type ExperimentEntities = {
       where: { id: string };
       data: {
         summaryText?: string | null;
-        summaryTextBg?: string | null;
-        langStatusEn?: string;
-        langStatusBg?: string;
-        jobError?: string | null;
         jobStatus?: string;
         updatedAt: Date | null;
       };
@@ -209,11 +191,14 @@ export type ExperimentEntities = {
 
 export function resolveDefaultSummaryModelId(): string {
   const hasAn = !!process.env.ANTHROPIC_API_KEY?.trim();
+  const hasGroq = !!process.env.GROQ_API_KEY?.trim();
   const hasGemini = !!process.env.GEMINI_API_KEY?.trim();
   const hasOpenAI = !!process.env.OPENAI_API_KEY?.trim();
   if (hasAn) return process.env.ANTHROPIC_MODEL_SUMMARY?.trim() || ANTHROPIC_SONNET_46_MODEL;
+  // Groq before OpenAI/Gemini: generous free-tier throughput vs tight Gemini caps.
+  if (hasGroq) return process.env.GROQ_MODEL_SUMMARY?.trim() || GROQ_LLAMA_4_SCOUT_MODEL;
+  if (hasOpenAI) return process.env.OPENAI_MODEL_SUMMARY?.trim() || OPENAI_GPT_55_MINI_MODEL;
   if (hasGemini) return process.env.GEMINI_MODEL_SUMMARY?.trim() || GEMINI_25_FLASH_LITE_MODEL;
-  if (hasOpenAI) return process.env.OPENAI_MODEL_SUMMARY?.trim() || OPENAI_GPT_55_MODEL;
   return ANTHROPIC_SONNET_46_MODEL;
 }
 
@@ -225,14 +210,19 @@ function defaultExperimentModels(): Array<{ slug: string; displayName: string; m
       modelApiId: process.env.ANTHROPIC_MODEL_SUMMARY?.trim() || ANTHROPIC_SONNET_46_MODEL,
     },
     {
+      slug: "groq",
+      displayName: "Groq Llama 4 Scout",
+      modelApiId: process.env.GROQ_MODEL_SUMMARY?.trim() || GROQ_LLAMA_4_SCOUT_MODEL,
+    },
+    {
       slug: "gemini",
       displayName: "Gemini 2.5 Flash Lite",
       modelApiId: process.env.GEMINI_MODEL_SUMMARY?.trim() || GEMINI_25_FLASH_LITE_MODEL,
     },
     {
       slug: "openai",
-      displayName: "OpenAI GPT-5.5",
-      modelApiId: process.env.OPENAI_MODEL_SUMMARY?.trim() || OPENAI_GPT_55_MODEL,
+      displayName: "OpenAI GPT-5.5 mini",
+      modelApiId: process.env.OPENAI_MODEL_SUMMARY?.trim() || OPENAI_GPT_55_MINI_MODEL,
     },
   ];
 }
@@ -241,7 +231,7 @@ export async function syncExperimentAggregationRows(
   spaceId: string,
   entities: ExperimentEntities,
 ): Promise<void> {
-  await entities.SpaceSummaryAggregation.deleteMany({ where: { spaceId } });
+  await entities.SpaceSummary.deleteMany({ where: { spaceId } });
   const prompts = await entities.SpacePrompt.findMany({
     where: { spaceId },
     orderBy: { slug: "asc" },
@@ -257,6 +247,7 @@ export async function syncExperimentAggregationRows(
     spaceId: string;
     promptId: string;
     spaceModelId: string;
+    language: string;
     jobStatus: string;
   }> = [];
   for (const p of prompts) {
@@ -265,11 +256,19 @@ export async function syncExperimentAggregationRows(
         spaceId,
         promptId: p.id,
         spaceModelId: m.id,
+        language: "en",
+        jobStatus: JOB.pending,
+      });
+      rows.push({
+        spaceId,
+        promptId: p.id,
+        spaceModelId: m.id,
+        language: "bg",
         jobStatus: JOB.pending,
       });
     }
   }
-  await entities.SpaceSummaryAggregation.createMany({ data: rows });
+  await entities.SpaceSummary.createMany({ data: rows });
 }
 
 export async function ensureExperimentDefaultsForSpace(
@@ -303,7 +302,7 @@ export async function ensureExperimentDefaultsForSpace(
 
 /**
  * Removes the legacy `brief` prompt so only `default` remains, and aligns
- * experiment model rows with the current 3-provider default deck.
+ * experiment model rows with the current default provider deck.
  */
 export async function reconcileExperimentDeckWithSingleDefaultPrompt(
   spaceId: string,
@@ -383,27 +382,209 @@ export async function reconcileExperimentDeckWithSingleDefaultPrompt(
   return changed;
 }
 
+type AggregationRowIncluded = {
+  id: string;
+  spaceId: string;
+  promptId: string;
+  spaceModelId: string;
+  language: string;
+  prompt: { slug: string; summaryPromptOutput: string };
+  spaceModel: { slug: string; displayName: string; modelApiId: string };
+};
+
+type AggregationPair = {
+  promptId: string;
+  spaceModelId: string;
+  prompt: { slug: string; summaryPromptOutput: string };
+  spaceModel: { slug: string; displayName: string; modelApiId: string };
+  en: AggregationRowIncluded | null;
+  bg: AggregationRowIncluded | null;
+};
+
+export function pairAggregationRows(rows: AggregationRowIncluded[]): AggregationPair[] {
+  const map = new Map<string, AggregationPair>();
+  for (const row of rows) {
+    const key = `${row.promptId}::${row.spaceModelId}`;
+    const cur =
+      map.get(key) ??
+      ({
+        promptId: row.promptId,
+        spaceModelId: row.spaceModelId,
+        prompt: row.prompt,
+        spaceModel: row.spaceModel,
+        en: null,
+        bg: null,
+      } satisfies AggregationPair);
+    if (row.language === "bg") cur.bg = row;
+    else cur.en = row;
+    map.set(key, cur);
+  }
+  return [...map.values()];
+}
+
+type FeedbackRowLite = {
+  tone: string;
+  rawText: string;
+  contributorHandleId: string;
+  createdAt: Date;
+};
+
 /**
- * Runs every prompt × model aggregation for the space and mirrors the first
- * card (lexicographic prompt slug, then model slug) onto SpaceSummary.summaryText
- * (English) and summaryTextBg (Bulgarian).
+ * LLM generation for a single prompt × model row (EN then BG). Updates the
+ * aggregation row in the database. Used by bulk regeneration and per-card actions.
  */
-export async function regenerateExperimentAggregations(
-  spaceId: string,
+async function runAggregationCardGeneration(
   entities: ExperimentEntities,
-): Promise<void> {
+  pair: AggregationPair,
+  deps: {
+    entries: FeedbackRowLite[];
+    spaceDisplayName: string;
+    sharedInput: string;
+  },
+): Promise<{
+  summaryTextEn: string | null;
+  summaryTextBg: string | null;
+  statusEn: string;
+  statusBg: string;
+}> {
+  const { entries, spaceDisplayName, sharedInput } = deps;
+  const bodyEn =
+    entries.length === 0
+      ? emptyAggregationUserMessage(spaceDisplayName, "English")
+      : buildAggregationUserMessage(entries, spaceDisplayName, "English");
+  const bodyBg =
+    entries.length === 0
+      ? emptyAggregationUserMessage(spaceDisplayName, "Bulgarian")
+      : buildAggregationUserMessage(entries, spaceDisplayName, "Bulgarian");
+
+  const system = composeExperimentSystemPrompt(
+    sharedInput,
+    pair.prompt.summaryPromptOutput.trim(),
+  );
+
+  let summaryTextEn: string | null = null;
+  let summaryTextBg: string | null = null;
+  let statusEn: string = JOB.pending;
+  let statusBg: string = JOB.pending;
+
+  const runEn = async () => {
+    if (!pair.en) return;
+    try {
+      const t = await callLlmText({
+        model: pair.spaceModel.modelApiId,
+        maxTokens: 700,
+        debugLabel: "summary-en",
+        system,
+        messages: [{ role: "user", content: bodyEn }],
+      });
+      summaryTextEn = t;
+      statusEn = JOB.ready;
+      await entities.SpaceSummary.update({
+        where: { id: pair.en.id },
+        data: {
+          summaryText: t,
+          jobStatus: JOB.ready,
+          updatedAt: new Date(),
+        },
+      });
+    } catch (err) {
+      console.error("experiment aggregation EN failed", pair.en.id, err);
+      const m = aggregationFailureMessage(err);
+      summaryTextEn = m;
+      statusEn = JOB.failed;
+      await entities.SpaceSummary.update({
+        where: { id: pair.en.id },
+        data: {
+          summaryText: m,
+          jobStatus: JOB.failed,
+          updatedAt: new Date(),
+        },
+      });
+    }
+  };
+
+  const runBg = async () => {
+    if (!pair.bg) return;
+    try {
+      const t = await callLlmText({
+        model: pair.spaceModel.modelApiId,
+        maxTokens: 700,
+        debugLabel: "summary-bg",
+        system,
+        messages: [{ role: "user", content: bodyBg }],
+      });
+      summaryTextBg = t;
+      statusBg = JOB.ready;
+      await entities.SpaceSummary.update({
+        where: { id: pair.bg.id },
+        data: {
+          summaryText: t,
+          jobStatus: JOB.ready,
+          updatedAt: new Date(),
+        },
+      });
+    } catch (err) {
+      console.error("experiment aggregation BG failed", pair.bg.id, err);
+      const m = aggregationFailureMessage(err);
+      summaryTextBg = m;
+      statusBg = JOB.failed;
+      await entities.SpaceSummary.update({
+        where: { id: pair.bg.id },
+        data: {
+          summaryText: m,
+          jobStatus: JOB.failed,
+          updatedAt: new Date(),
+        },
+      });
+    }
+  };
+
+  await runEn();
+  await runBg();
+
+  return {
+    summaryTextEn,
+    summaryTextBg,
+    statusEn,
+    statusBg,
+  };
+}
+
+/**
+ * Synchronously (one HTTP request) generates EN+BG for one aggregation row
+ * and updates that row in the DB.
+ */
+export async function generateExperimentAggregationRow(
+  spaceId: string,
+  aggregationId: string,
+  entities: ExperimentEntities,
+): Promise<{
+  summaryTextEn: string | null;
+  summaryTextBg: string | null;
+  error: string | null;
+  mirroredPrimary: boolean;
+} | null> {
+  const aggsForRow = await entities.SpaceSummary.findMany({
+    where: { spaceId },
+    include: { prompt: true, spaceModel: true },
+  });
+  const pair = pairAggregationRows(aggsForRow).find(
+    (p) => p.en?.id === aggregationId || p.bg?.id === aggregationId,
+  );
+  const row = pair?.en ?? pair?.bg ?? null;
+  if (!row) {
+    return null;
+  }
+
   const entries = await entities.FeedbackEntry.findMany({
     where: { spaceId },
     orderBy: { createdAt: "asc" },
     take: 200,
   });
 
-  const praise = entries.filter((e) => e.tone === "praise").length;
-  const critique = entries.filter((e) => e.tone === "constructive_criticism").length;
-  const total = entries.length;
-
   const hasKeys = !!(
     process.env.ANTHROPIC_API_KEY?.trim() ||
+    process.env.GROQ_API_KEY?.trim() ||
     process.env.GEMINI_API_KEY?.trim() ||
     process.env.OPENAI_API_KEY?.trim()
   );
@@ -415,7 +596,87 @@ export async function regenerateExperimentAggregations(
   const spaceDisplayName =
     space?.name?.trim() || space?.shortCode?.trim() || "this space";
 
-  const aggs = await entities.SpaceSummaryAggregation.findMany({
+  const aggs = await entities.SpaceSummary.findMany({
+    where: { spaceId },
+    include: { prompt: true, spaceModel: true },
+  });
+  const sorted = [...pairAggregationRows(aggs)].sort((x, y) => {
+    const ps = x.prompt.slug.localeCompare(y.prompt.slug);
+    if (ps !== 0) return ps;
+    return x.spaceModel.slug.localeCompare(y.spaceModel.slug);
+  });
+  const primaryId = sorted[0]?.en?.id ?? sorted[0]?.bg?.id ?? null;
+
+  const sharedInput = await getSummaryPromptInputFromDb(entities.AppSetting);
+
+  if (!hasKeys) {
+    const noKeyEn = noLlmKeyAggregationMessage("en");
+    const noKeyBg = noLlmKeyAggregationMessage("bg");
+    if (pair?.en) {
+      await entities.SpaceSummary.update({
+        where: { id: pair.en.id },
+        data: { summaryText: noKeyEn, jobStatus: JOB.ready, updatedAt: new Date() },
+      });
+    }
+    if (pair?.bg) {
+      await entities.SpaceSummary.update({
+        where: { id: pair.bg.id },
+        data: { summaryText: noKeyBg, jobStatus: JOB.ready, updatedAt: new Date() },
+      });
+    }
+    return {
+      summaryTextEn: noKeyEn,
+      summaryTextBg: noKeyBg,
+      error: null,
+      mirroredPrimary: primaryId === row.id,
+    };
+  }
+
+  const r = await runAggregationCardGeneration(entities, pair!, {
+    entries,
+    spaceDisplayName,
+    sharedInput,
+  });
+
+  return {
+    summaryTextEn: r.summaryTextEn,
+    summaryTextBg: r.summaryTextBg,
+    error: r.statusEn === JOB.failed && r.statusBg === JOB.failed ? "Both languages failed" : null,
+    mirroredPrimary: primaryId === row.id,
+  };
+}
+
+/**
+ * Runs every prompt × model aggregation for the space.
+ */
+export async function regenerateExperimentAggregations(
+  spaceId: string,
+  entities: ExperimentEntities,
+  preferredLang: "en" | "bg" = "en",
+): Promise<void> {
+  const entries = await entities.FeedbackEntry.findMany({
+    where: { spaceId },
+    orderBy: { createdAt: "asc" },
+    take: 200,
+  });
+
+  const total = entries.length;
+
+  const hasKeys = !!(
+    process.env.ANTHROPIC_API_KEY?.trim() ||
+    process.env.GROQ_API_KEY?.trim() ||
+    process.env.GEMINI_API_KEY?.trim() ||
+    process.env.OPENAI_API_KEY?.trim()
+  );
+
+  const space = await entities.Space.findUnique({
+    where: { id: spaceId },
+    select: { name: true, shortCode: true },
+  });
+  const spaceDisplayName =
+    space?.name?.trim() || space?.shortCode?.trim() || "this space";
+
+  const aggs = await entities.SpaceSummary.findMany({
     where: { spaceId },
     include: { prompt: true, spaceModel: true },
   });
@@ -428,39 +689,13 @@ export async function regenerateExperimentAggregations(
     hasLlmKeys: hasKeys,
   });
 
-  if (aggs.length === 0) {
-    await entities.SpaceSummary.update({
-      where: { spaceId },
-      data: {
-        summaryText: statsOnlySummaryMessage({
-          total,
-          praise,
-          critique,
-          lang: "en",
-          includeNoKeyHint: !hasKeys,
-        }),
-        summaryTextBg: statsOnlySummaryMessage({
-          total,
-          praise,
-          critique,
-          lang: "bg",
-          includeNoKeyHint: !hasKeys,
-        }),
-        jobStatus: JOB.ready,
-        updatedAt: new Date(),
-      },
-    });
-    return;
-  }
+  if (aggs.length === 0) return;
 
   if (hasKeys && aggs.length > 0) {
-    await entities.SpaceSummaryAggregation.updateMany({
+    await entities.SpaceSummary.updateMany({
       where: { spaceId },
       data: {
         jobStatus: JOB.pending,
-        jobError: null,
-        langStatusEn: JOB.pending,
-        langStatusBg: JOB.pending,
         updatedAt: new Date(),
       },
     });
@@ -470,210 +705,90 @@ export async function regenerateExperimentAggregations(
     const noKeyEn = noLlmKeyAggregationMessage("en");
     const noKeyBg = noLlmKeyAggregationMessage("bg");
     for (const a of aggs) {
-      await entities.SpaceSummaryAggregation.update({
+      await entities.SpaceSummary.update({
         where: { id: a.id },
         data: {
-          summaryText: noKeyEn,
-          summaryTextBg: noKeyBg,
-          jobError: null,
+          summaryText: a.language === "bg" ? noKeyBg : noKeyEn,
           jobStatus: JOB.ready,
-          langStatusEn: JOB.ready,
-          langStatusBg: JOB.ready,
           updatedAt: new Date(),
         },
       });
     }
-    await entities.SpaceSummary.update({
-      where: { spaceId },
-      data: {
-        summaryText: statsOnlySummaryMessage({
-          total,
-          praise,
-          critique,
-          lang: "en",
-          includeNoKeyHint: true,
-        }),
-        summaryTextBg: statsOnlySummaryMessage({
-          total,
-          praise,
-          critique,
-          lang: "bg",
-          includeNoKeyHint: true,
-        }),
-        jobStatus: JOB.ready,
-        updatedAt: new Date(),
-      },
-    });
     return;
   }
 
-  const sorted = [...aggs].sort((a, b) => {
+  const sorted = [...pairAggregationRows(aggs)].sort((a, b) => {
     const ps = a.prompt.slug.localeCompare(b.prompt.slug);
     if (ps !== 0) return ps;
     return a.spaceModel.slug.localeCompare(b.spaceModel.slug);
   });
 
   const sharedInput = await getSummaryPromptInputFromDb(entities.AppSetting);
-
-  const statsEn = statsOnlySummaryMessage({
-    total,
-    praise,
-    critique,
-    lang: "en",
-    includeNoKeyHint: false,
-  });
-  const statsBg = statsOnlySummaryMessage({
-    total,
-    praise,
-    critique,
-    lang: "bg",
-    includeNoKeyHint: false,
-  });
-
-  type AggRow = (typeof sorted)[number];
-
-  async function runOneCard(a: AggRow): Promise<{
-    id: string;
-    summaryText: string | null;
-    summaryTextBg: string | null;
-    langStatusEn: string;
-    langStatusBg: string;
-  }> {
-    const bodyEn =
-      entries.length === 0
-        ? emptyAggregationUserMessage(spaceDisplayName, "English")
-        : buildAggregationUserMessage(entries, spaceDisplayName, "English");
-    const bodyBg =
-      entries.length === 0
-        ? emptyAggregationUserMessage(spaceDisplayName, "Bulgarian")
-        : buildAggregationUserMessage(entries, spaceDisplayName, "Bulgarian");
-
-    const system = composeExperimentSystemPrompt(
-      sharedInput,
-      a.prompt.summaryPromptOutput.trim(),
+  const runPhase = async (lang: "en" | "bg") => {
+    await Promise.all(
+      sorted.map(async (pair) => {
+        const target = lang === "bg" ? pair.bg : pair.en;
+        if (!target) return;
+        const body =
+          entries.length === 0
+            ? emptyAggregationUserMessage(
+                spaceDisplayName,
+                lang === "bg" ? "Bulgarian" : "English",
+              )
+            : buildAggregationUserMessage(
+                entries,
+                spaceDisplayName,
+                lang === "bg" ? "Bulgarian" : "English",
+              );
+        const system = composeExperimentSystemPrompt(
+          sharedInput,
+          pair.prompt.summaryPromptOutput.trim(),
+        );
+        try {
+          const text = await callLlmText({
+            model: pair.spaceModel.modelApiId,
+            maxTokens: 700,
+            debugLabel: lang === "bg" ? "summary-bg" : "summary-en",
+            system,
+            messages: [{ role: "user", content: body }],
+          });
+          await entities.SpaceSummary.update({
+            where: { id: target.id },
+            data: {
+              summaryText: text,
+              jobStatus: JOB.ready,
+              updatedAt: new Date(),
+            },
+          });
+        } catch (err) {
+          console.error(
+            lang === "bg"
+              ? "experiment aggregation BG failed"
+              : "experiment aggregation EN failed",
+            target.id,
+            err,
+          );
+          const m = aggregationFailureMessage(err);
+          await entities.SpaceSummary.update({
+            where: { id: target.id },
+            data: {
+              summaryText: m,
+              jobStatus: JOB.failed,
+              updatedAt: new Date(),
+            },
+          });
+        }
+      }),
     );
+  };
 
-    let summaryText: string | null = null;
-    let summaryTextBg: string | null = null;
-    let langEn: string = JOB.pending;
-    let langBg: string = JOB.pending;
-
-    const runEn = async () => {
-      try {
-        const t = await callLlmText({
-          model: a.spaceModel.modelApiId,
-          maxTokens: 700,
-          debugLabel: "summary-en",
-          system,
-          messages: [{ role: "user", content: bodyEn }],
-        });
-        summaryText = t;
-        langEn = JOB.ready;
-        await entities.SpaceSummaryAggregation.update({
-          where: { id: a.id },
-          data: {
-            summaryText: t,
-            langStatusEn: JOB.ready,
-            updatedAt: new Date(),
-          },
-        });
-      } catch (err) {
-        console.error("experiment aggregation EN failed", a.id, err);
-        const m = aggregationFailureMessage(err);
-        summaryText = m;
-        langEn = JOB.failed;
-        await entities.SpaceSummaryAggregation.update({
-          where: { id: a.id },
-          data: {
-            summaryText: m,
-            langStatusEn: JOB.failed,
-            jobError: m,
-            updatedAt: new Date(),
-          },
-        });
-      }
-    };
-
-    const runBg = async () => {
-      try {
-        const t = await callLlmText({
-          model: a.spaceModel.modelApiId,
-          maxTokens: 700,
-          debugLabel: "summary-bg",
-          system,
-          messages: [{ role: "user", content: bodyBg }],
-        });
-        summaryTextBg = t;
-        langBg = JOB.ready;
-        await entities.SpaceSummaryAggregation.update({
-          where: { id: a.id },
-          data: {
-            summaryTextBg: t,
-            langStatusBg: JOB.ready,
-            updatedAt: new Date(),
-          },
-        });
-      } catch (err) {
-        console.error("experiment aggregation BG failed", a.id, err);
-        const m = aggregationFailureMessage(err);
-        summaryTextBg = m;
-        langBg = JOB.failed;
-        await entities.SpaceSummaryAggregation.update({
-          where: { id: a.id },
-          data: {
-            summaryTextBg: m,
-            langStatusBg: JOB.failed,
-            jobError: m,
-            updatedAt: new Date(),
-          },
-        });
-      }
-    };
-
-    await Promise.all([runEn(), runBg()]);
-
-    const bothFailed = langEn === JOB.failed && langBg === JOB.failed;
-    const overall = bothFailed ? JOB.failed : JOB.ready;
-    await entities.SpaceSummaryAggregation.update({
-      where: { id: a.id },
-      data: {
-        jobStatus: overall,
-        jobError: bothFailed ? (summaryText ?? summaryTextBg) : null,
-        updatedAt: new Date(),
-      },
-    });
-
-    return {
-      id: a.id,
-      summaryText,
-      summaryTextBg,
-      langStatusEn: langEn,
-      langStatusBg: langBg,
-    };
+  if (preferredLang === "bg") {
+    await runPhase("bg");
+    await runPhase("en");
+  } else {
+    await runPhase("en");
+    await runPhase("bg");
   }
-
-  const results = await Promise.all(sorted.map((a) => runOneCard(a)));
-
-  const primaryId = sorted[0]!.id;
-  const primary = results.find((r) => r.id === primaryId);
-  let firstTextEn = statsEn;
-  let firstTextBg = statsBg;
-  if (primary?.langStatusEn === JOB.ready && primary.summaryText?.trim()) {
-    firstTextEn = primary.summaryText;
-  }
-  if (primary?.langStatusBg === JOB.ready && primary.summaryTextBg?.trim()) {
-    firstTextBg = primary.summaryTextBg;
-  }
-
-  await entities.SpaceSummary.update({
-    where: { spaceId },
-    data: {
-      summaryText: firstTextEn,
-      summaryTextBg: firstTextBg,
-      jobStatus: JOB.ready,
-      updatedAt: new Date(),
-    },
-  });
 }
 
 /**

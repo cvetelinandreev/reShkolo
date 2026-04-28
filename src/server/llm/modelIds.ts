@@ -12,3 +12,9 @@ export const OPENAI_GPT_54_MINI_MODEL = "gpt-5.4-mini";
 
 /** OpenAI quality model for summary generation alternatives. */
 export const OPENAI_GPT_55_MODEL = "gpt-5.5";
+
+/** OpenAI smaller / cheaper summary default (set OPENAI_MODEL_SUMMARY to override). */
+export const OPENAI_GPT_55_MINI_MODEL = "gpt-5.5-mini";
+
+/** Groq Cloud OpenAI-compatible chat — Llama default with higher TPM headroom for summaries (set GROQ_MODEL_SUMMARY to override). */
+export const GROQ_LLAMA_4_SCOUT_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct";

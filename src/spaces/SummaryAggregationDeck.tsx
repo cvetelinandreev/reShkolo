@@ -10,7 +10,13 @@ import {
   ClipboardDocumentIcon,
   XMarkIcon,
 } from "@heroicons/react/24/outline";
-import { useMemo, useState, type ReactNode } from "react";
+import {
+  useMemo,
+  useState,
+  type Dispatch,
+  type ReactNode,
+  type SetStateAction,
+} from "react";
 import type { HeaderLang } from "../shared/components/JournalAppHeader";
 
 export type ExperimentAggCard = {
@@ -24,7 +30,6 @@ export type ExperimentAggCard = {
   summaryTextBg: string | null;
   langStatusEn: string;
   langStatusBg: string;
-  jobError: string | null;
   jobStatus: string;
   updatedAt: string | null;
 };
@@ -34,38 +39,12 @@ type Props = {
   aggs: ExperimentAggCard[];
 };
 
-/** Older failed rows stored stats copy here instead of the LLM error. */
-function isLikelyStatsOnlyDeckBody(text: string | null | undefined): boolean {
-  const t = text?.trim() ?? "";
-  if (!t) return false;
-  return (
-    t.startsWith("This space has") ||
-    t.startsWith("There is ") ||
-    t.startsWith("There are ") ||
-    t.startsWith("До момента има") ||
-    t.includes("Overall tone mix:") ||
-    t.includes("Общ микс от тон:")
-  );
-}
-
-function langText(card: ExperimentAggCard, lang: HeaderLang): string | null {
-  return lang === "bg" ? card.summaryTextBg : card.summaryTextEn;
-}
-
-function langStatus(card: ExperimentAggCard, lang: HeaderLang): string {
-  return lang === "bg" ? card.langStatusBg : card.langStatusEn;
-}
-
-function aggregationCardFailureText(
-  card: ExperimentAggCard,
+function pickViewerText(
+  en: string | null,
+  bg: string | null,
   lang: HeaderLang,
-  failedFallback: string,
-): string {
-  const fromJob = card.jobError?.trim();
-  if (fromJob) return fromJob;
-  const fromSummary = langText(card, lang)?.trim();
-  if (fromSummary && !isLikelyStatsOnlyDeckBody(fromSummary)) return fromSummary;
-  return failedFallback;
+): string | null {
+  return lang === "bg" ? bg : en;
 }
 
 function ContainedHorizontalScrollStrip({ children }: { children: ReactNode }) {
@@ -85,7 +64,7 @@ function PromptBodyModal(props: {
 }) {
   const closeAria = props.lang === "bg" ? "Затвори" : "Close";
   return (
-    <Dialog open={props.open} onClose={() => props.onClose()} className="relative z-[100]">
+    <Dialog open={props.open} onClose={props.onClose} className="relative z-[100]">
       <DialogBackdrop className="fixed inset-0 bg-black/45" transition={false} />
       <div className="fixed inset-0 flex flex-col px-2 pb-[max(0.5rem,env(safe-area-inset-bottom))] pt-[max(0.5rem,env(safe-area-inset-top))] sm:px-3 sm:pb-3 sm:pt-3">
         <DialogPanel className="relative flex min-h-0 flex-1 flex-col overflow-hidden rounded-2xl bg-white shadow-xl">
@@ -114,54 +93,36 @@ function PromptBodyModal(props: {
   );
 }
 
-export function SummaryAggregationDeck(props: Props) {
-  const [promptModal, setPromptModal] = useState<{
-    slug: string;
-    body: string;
-  } | null>(null);
-  const [copiedCardId, setCopiedCardId] = useState<string | null>(null);
+type CardLabels = {
+  promptPrefix: string;
+  empty: string;
+  pending: string;
+  copyCard: string;
+  copiedCard: string;
+  noText: string;
+};
 
-  const labels = useMemo(
-    () =>
-      props.lang === "bg"
-        ? {
-            deckTitle: "Обобщение",
-            promptPrefix: "Промпт:",
-            empty: "Няма карти за показване.",
-            pending: "Генериране…",
-            failedFallback: "Неуспех за тази комбинация.",
-            copyCard: "Копирай",
-            copiedCard: "Копирано",
-          }
-        : {
-            deckTitle: "Summaries",
-            promptPrefix: "Prompt:",
-            empty: "No aggregation cards yet.",
-            pending: "Generating…",
-            failedFallback: "This combination failed.",
-            copyCard: "Copy",
-            copiedCard: "Copied",
-          },
-    [props.lang],
-  );
+function AggregationModelCard(props: {
+  card: ExperimentAggCard;
+  lang: HeaderLang;
+  labels: CardLabels;
+  copiedCardId: string | null;
+  setCopiedCardId: Dispatch<SetStateAction<string | null>>;
+  onOpenPrompt: (slug: string, body: string) => void;
+}) {
+  const { card, lang, labels } = props;
+  const viewerText = pickViewerText(card.summaryTextEn, card.summaryTextBg, lang)?.trim() ?? "";
+  const isPending =
+    card.jobStatus === "pending" ||
+    card.langStatusEn === "pending" ||
+    card.langStatusBg === "pending";
 
-  function cardBodyText(card: ExperimentAggCard): string {
-    const st = langStatus(card, props.lang);
-    const txt = langText(card, props.lang)?.trim();
-    if (st === "pending") return labels.pending;
-    if (st === "failed") {
-      return aggregationCardFailureText(card, props.lang, labels.failedFallback);
-    }
-    return txt || (props.lang === "bg" ? "Няма текст." : "No text yet.");
-  }
-
-  async function copyCardText(card: ExperimentAggCard) {
-    const text = [
-      card.modelApiId,
-      `${labels.promptPrefix} ${card.promptSlug}`,
-      "",
-      cardBodyText(card),
-    ].join("\n");
+  async function copyCardText() {
+    const body =
+      viewerText || labels.noText;
+    const text = [card.modelApiId, `${labels.promptPrefix} ${card.promptSlug}`, "", body].join(
+      "\n",
+    );
     let copied = false;
     try {
       if (navigator.clipboard?.writeText) {
@@ -188,97 +149,121 @@ export function SummaryAggregationDeck(props: Props) {
       }
     }
     if (!copied) return;
-    setCopiedCardId(card.id);
+    props.setCopiedCardId(card.id);
     window.setTimeout(() => {
-      setCopiedCardId((curr) => (curr === card.id ? null : curr));
+      props.setCopiedCardId((curr) => (curr === card.id ? null : curr));
     }, 1400);
   }
 
   return (
-    <section className="min-w-0 w-full max-w-full space-y-3">
-      <h2 className="text-sm font-medium tracking-wide text-neutral-700">{labels.deckTitle}</h2>
+    <article className="relative flex w-72 max-w-full shrink-0 snap-center snap-always flex-col rounded-2xl border border-neutral-200/90 bg-white/95 p-3 pb-11 shadow-sm">
+      <header className="mb-2 shrink-0 border-b border-neutral-100 pb-2">
+        <div className="flex min-w-0 items-start justify-between gap-2">
+          <p
+            className="min-w-0 flex-1 break-words text-sm font-medium leading-snug text-neutral-900"
+            title={card.modelApiId}
+          >
+            {card.modelApiId}
+          </p>
+          <button
+            type="button"
+            onClick={() => props.onOpenPrompt(card.promptSlug, card.summaryPromptOutput)}
+            className="max-w-[55%] shrink-0 pl-2 text-right text-sm font-medium text-[#1583ca] underline-offset-2 hover:underline [overflow-wrap:anywhere]"
+          >
+            <span className="text-neutral-500">{labels.promptPrefix}</span> {card.promptSlug}
+          </button>
+        </div>
+      </header>
 
+      <div className="relative min-h-[5.5rem] min-w-0 flex-1 text-sm leading-relaxed text-neutral-900">
+        {isPending ? (
+          <div
+            className="absolute inset-0 flex flex-col items-center justify-center gap-2 py-4"
+            role="status"
+            aria-live="polite"
+          >
+            <ArrowPathIcon
+              className="h-8 w-8 shrink-0 animate-spin text-[#1583ca]"
+              aria-hidden
+            />
+            <span className="text-xs text-neutral-500">{labels.pending}</span>
+          </div>
+        ) : (
+          <p className="whitespace-pre-wrap break-words [overflow-wrap:anywhere]">
+            {viewerText || labels.noText}
+          </p>
+        )}
+      </div>
+
+      <button
+        type="button"
+        onClick={() => void copyCardText()}
+        className="absolute bottom-2.5 right-2.5 inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-neutral-200 bg-white/95 text-neutral-700 shadow-sm hover:bg-neutral-50"
+        aria-label={props.copiedCardId === card.id ? labels.copiedCard : labels.copyCard}
+        title={props.copiedCardId === card.id ? labels.copiedCard : labels.copyCard}
+      >
+        {props.copiedCardId === card.id ? (
+          <CheckIcon className="h-4 w-4 text-emerald-600" aria-hidden />
+        ) : (
+          <ClipboardDocumentIcon className="h-4 w-4" aria-hidden />
+        )}
+      </button>
+    </article>
+  );
+}
+
+export function SummaryAggregationDeck(props: Props) {
+  const [promptModal, setPromptModal] = useState<{
+    slug: string;
+    body: string;
+  } | null>(null);
+  const [copiedCardId, setCopiedCardId] = useState<string | null>(null);
+
+  const labels: CardLabels = useMemo(
+    () =>
+      props.lang === "bg"
+        ? {
+            promptPrefix: "Промпт:",
+            empty: "Няма карти за показване.",
+            pending: "Генериране…",
+            copyCard: "Копирай",
+            copiedCard: "Копирано",
+            noText: "Няма текст.",
+          }
+        : {
+            promptPrefix: "Prompt:",
+            empty: "No aggregation cards yet.",
+            pending: "Generating…",
+            copyCard: "Copy",
+            copiedCard: "Copied",
+            noText: "No text yet.",
+          },
+    [props.lang],
+  );
+
+  return (
+    <section className="min-w-0 w-full max-w-full space-y-3">
       {props.aggs.length === 0 ? (
         <p className="text-sm text-neutral-600">{labels.empty}</p>
       ) : (
         <ContainedHorizontalScrollStrip>
           {props.aggs.map((card) => (
-            <article
+            <AggregationModelCard
               key={card.id}
-              className="relative flex w-72 max-w-full shrink-0 snap-center snap-always flex-col rounded-2xl border border-neutral-200/90 bg-white/95 p-3 pb-11 shadow-sm"
-            >
-              <header className="mb-2 shrink-0 border-b border-neutral-100 pb-2">
-                <div className="flex min-w-0 items-start justify-between gap-2">
-                  <p
-                    className="min-w-0 flex-1 break-words text-sm font-medium leading-snug text-neutral-900"
-                    title={card.modelApiId}
-                  >
-                    {card.modelApiId}
-                  </p>
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setPromptModal({
-                        slug: card.promptSlug,
-                        body: card.summaryPromptOutput,
-                      })
-                    }
-                    className="max-w-[55%] shrink-0 pl-2 text-right text-sm font-medium text-[#1583ca] underline-offset-2 hover:underline [overflow-wrap:anywhere]"
-                  >
-                    <span className="text-neutral-500">{labels.promptPrefix}</span>{" "}
-                    {card.promptSlug}
-                  </button>
-                </div>
-              </header>
-
-              <div className="relative min-h-[5.5rem] min-w-0 flex-1 text-sm leading-relaxed text-neutral-900">
-                {langStatus(card, props.lang) === "pending" ? (
-                  <div
-                    className="absolute inset-0 flex flex-col items-center justify-center gap-2 py-4"
-                    role="status"
-                    aria-live="polite"
-                  >
-                    <ArrowPathIcon
-                      className="h-8 w-8 shrink-0 animate-spin text-[#1583ca]"
-                      aria-hidden
-                    />
-                    <span className="text-xs text-neutral-500">{labels.pending}</span>
-                  </div>
-                ) : langStatus(card, props.lang) === "failed" ? (
-                  <p className="whitespace-pre-wrap break-words text-sm text-red-700 [overflow-wrap:anywhere]">
-                    {aggregationCardFailureText(card, props.lang, labels.failedFallback)}
-                  </p>
-                ) : (
-                  <p className="whitespace-pre-wrap break-words [overflow-wrap:anywhere]">
-                    {langText(card, props.lang)?.trim() ||
-                      (props.lang === "bg" ? "Няма текст." : "No text yet.")}
-                  </p>
-                )}
-              </div>
-
-              <button
-                type="button"
-                onClick={() => void copyCardText(card)}
-                className="absolute bottom-2.5 right-2.5 inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-neutral-200 bg-white/95 text-neutral-700 shadow-sm hover:bg-neutral-50"
-                aria-label={copiedCardId === card.id ? labels.copiedCard : labels.copyCard}
-                title={copiedCardId === card.id ? labels.copiedCard : labels.copyCard}
-              >
-                {copiedCardId === card.id ? (
-                  <CheckIcon className="h-4 w-4 text-emerald-600" aria-hidden />
-                ) : (
-                  <ClipboardDocumentIcon className="h-4 w-4" aria-hidden />
-                )}
-              </button>
-            </article>
+              card={card}
+              lang={props.lang}
+              labels={labels}
+              copiedCardId={copiedCardId}
+              setCopiedCardId={setCopiedCardId}
+              onOpenPrompt={(slug, body) => setPromptModal({ slug, body })}
+            />
           ))}
         </ContainedHorizontalScrollStrip>
       )}
 
       <PromptBodyModal
         open={promptModal != null}
-        title={
-          promptModal ? `${labels.promptPrefix} ${promptModal.slug}` : ""
-        }
+        title={promptModal ? `${labels.promptPrefix} ${promptModal.slug}` : ""}
         body={promptModal?.body ?? ""}
         lang={props.lang}
         onClose={() => setPromptModal(null)}

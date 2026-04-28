@@ -13,17 +13,14 @@ import type {
 import { classifyFeedbackText } from "./classify";
 import {
   ensureExperimentDefaultsForSpace,
-  reconcileExperimentDeckWithSingleDefaultPrompt,
   regenerateExperimentAggregations,
   syncExperimentAggregationRows,
 } from "./experimentAsync";
+import { bootstrapSummaryRecovery } from "./summaryRecovery";
 import {
   getSummaryPromptInputFromDb,
-  seedSummaryPromptAppSettingsIfMissing,
   SUMMARY_PROMPT_INPUT_KEY,
 } from "./defaultPromptStore";
-import { regenerateSpaceSummary } from "./summaryAsync";
-
 export const TONE = {
   praise: "praise",
   constructive_criticism: "constructive_criticism",
@@ -46,6 +43,12 @@ const SLUG_RE = /^[a-z0-9-]{1,48}$/;
 const MAX_PROMPTS = 12;
 const MAX_MODELS = 12;
 const MAX_COMBOS = 48;
+const DEFAULT_EMPTY_SUMMARY_BG =
+  "Още никой не е изпратил нито похвала, нито забележка за {subject}. Можеш да бъдеш първият.";
+const DEFAULT_EMPTY_SUMMARY_EN =
+  "No one has submitted any praise or feedback about {subject} yet — you can be the first.";
+
+bootstrapSummaryRecovery();
 
 function normalizeSummaryDisplayLang(raw: string | undefined): SummaryDisplayLang {
   return raw === "bg" ? "bg" : "en";
@@ -71,14 +74,105 @@ function mapClassificationMeta(summary: {
   };
 }
 
+async function getClassificationMetaFromFeedback(
+  spaceId: string,
+  feedbackEntry: any,
+): Promise<ReturnType<typeof mapClassificationMeta>> {
+  const totals = (await feedbackEntry.groupBy({
+    by: ["tone"],
+    where: { spaceId },
+    _count: { _all: true },
+  })) as Array<{ tone: string; _count: { _all: number } }>;
+
+  let positiveCount = 0;
+  let negativeCount = 0;
+  for (const row of totals) {
+    if (row.tone === TONE.praise) positiveCount = row._count._all;
+    if (row.tone === TONE.constructive_criticism) negativeCount = row._count._all;
+  }
+  const totalCount = positiveCount + negativeCount;
+  return mapClassificationMeta({ totalCount, positiveCount, negativeCount });
+}
+
+function pickPrimaryAggregation<T extends {
+  prompt: { slug: string };
+  spaceModel: { slug: string };
+}>(rows: T[]): T | null {
+  if (rows.length === 0) return null;
+  const sorted = [...rows].sort((a, b) => {
+    const p = a.prompt.slug.localeCompare(b.prompt.slug);
+    if (p !== 0) return p;
+    return a.spaceModel.slug.localeCompare(b.spaceModel.slug);
+  });
+  return sorted[0] ?? null;
+}
+
+function combineLanguageRows<T extends {
+  id: string;
+  language: string;
+  summaryText: string | null;
+  jobStatus: string;
+  updatedAt: Date | null;
+  prompt: { slug: string; summaryPromptOutput: string };
+  spaceModel: { slug: string; displayName: string; modelApiId: string };
+}>(rows: T[]) {
+  const byKey = new Map<
+    string,
+    {
+      id: string;
+      prompt: T["prompt"];
+      spaceModel: T["spaceModel"];
+      summaryTextEn: string | null;
+      summaryTextBg: string | null;
+      langStatusEn: string;
+      langStatusBg: string;
+      jobStatus: string;
+      updatedAt: Date | null;
+    }
+  >();
+  for (const row of rows) {
+    const key = `${row.prompt.slug}::${row.spaceModel.slug}`;
+    const cur = byKey.get(key) ?? {
+      id: row.id,
+      prompt: row.prompt,
+      spaceModel: row.spaceModel,
+      summaryTextEn: null,
+      summaryTextBg: null,
+      langStatusEn: JOB.pending,
+      langStatusBg: JOB.pending,
+      jobStatus: JOB.pending,
+      updatedAt: null as Date | null,
+    };
+    if (row.language === "bg") {
+      cur.summaryTextBg = row.summaryText;
+      cur.langStatusBg = row.jobStatus;
+    } else {
+      cur.summaryTextEn = row.summaryText;
+      cur.langStatusEn = row.jobStatus;
+      cur.id = row.id;
+    }
+    cur.jobStatus =
+      cur.langStatusEn === JOB.failed && cur.langStatusBg === JOB.failed
+        ? JOB.failed
+        : cur.langStatusEn === JOB.pending || cur.langStatusBg === JOB.pending
+          ? JOB.pending
+          : JOB.ready;
+    const ts = row.updatedAt?.getTime() ?? 0;
+    const curTs = cur.updatedAt?.getTime() ?? 0;
+    if (ts > curTs) cur.updatedAt = row.updatedAt;
+    byKey.set(key, cur);
+  }
+  return [...byKey.values()];
+}
+
 export const createSpace: CreateSpace<
-  { name?: string | null },
+  { name?: string | null; displayLang?: SummaryDisplayLang },
   {
     spaceId: string;
     shortCode: string;
     contributorHandleId: string;
   }
-> = async ({ name }, context) => {
+> = async ({ name, displayLang }, context) => {
   let shortCode = "";
   for (let i = 0; i < 24; i++) {
     const candidate = makeShortCode();
@@ -107,30 +201,25 @@ export const createSpace: CreateSpace<
     },
   });
 
-  await context.entities.SpaceSummary.create({
+  await ensureExperimentDefaultsForSpace(space.id, context.entities);
+  const subject = space.name?.trim() || space.shortCode;
+  const emptyBg = DEFAULT_EMPTY_SUMMARY_BG.replace("{subject}", subject);
+  const emptyEn = DEFAULT_EMPTY_SUMMARY_EN.replace("{subject}", subject);
+  await context.entities.SpaceSummary.updateMany({
+    where: { spaceId: space.id },
     data: {
-      spaceId: space.id,
-      totalCount: 0,
-      positiveCount: 0,
-      negativeCount: 0,
+      summaryText: emptyEn,
       jobStatus: JOB.ready,
-      summaryText: null,
-      updatedAt: null,
+      updatedAt: new Date(),
     },
   });
-
-  await ensureExperimentDefaultsForSpace(space.id, context.entities);
-
-  await context.entities.SpaceSummary.update({
-    where: { spaceId: space.id },
-    data: { jobStatus: JOB.pending },
-  });
-  void regenerateSpaceSummary(space.id, context.entities).catch((err) => {
-    console.error("createSpace regenerateSpaceSummary failed", err);
-    void context.entities.SpaceSummary.update({
-      where: { spaceId: space.id },
-      data: { jobStatus: JOB.failed },
-    });
+  await context.entities.SpaceSummary.updateMany({
+    where: { spaceId: space.id, language: "bg" },
+    data: {
+      summaryText: emptyBg,
+      jobStatus: JOB.ready,
+      updatedAt: new Date(),
+    },
   });
 
   devServerLog("createSpace", {
@@ -172,14 +261,17 @@ export const joinSpace: JoinSpace<
     data: { spaceId: space.id },
   });
 
-  const agg = await context.entities.SpaceSummary.findUnique({
-    where: { spaceId: space.id },
-  });
-  if (!agg) {
-    throw new HttpError(500, "Space summary missing");
-  }
-
+  const [rows, classificationMeta] = await Promise.all([
+    context.entities.SpaceSummary.findMany({
+      where: { spaceId: space.id },
+      include: { prompt: true, spaceModel: true },
+    }),
+    getClassificationMetaFromFeedback(space.id, context.entities.FeedbackEntry),
+  ]);
+  const combined = combineLanguageRows(rows);
+  const primary = pickPrimaryAggregation(combined);
   const lang = normalizeSummaryDisplayLang(displayLang);
+
   devServerLog("joinSpace", {
     spaceId: space.id,
     shortCode: space.shortCode,
@@ -191,9 +283,9 @@ export const joinSpace: JoinSpace<
     spaceId: space.id,
     shortCode: space.shortCode,
     spaceName: space.name,
-    summary: pickSummaryForDisplay(agg, lang),
-    classificationMeta: mapClassificationMeta(agg),
-    updatedAt: agg.updatedAt ? agg.updatedAt.toISOString() : null,
+    summary: primary ? pickSummaryForDisplay(primary, lang) : null,
+    classificationMeta,
+    updatedAt: primary?.updatedAt ? primary.updatedAt.toISOString() : null,
     contributorHandleId: handle.id,
   };
 };
@@ -204,12 +296,13 @@ export const submitFeedback: SubmitFeedback<
     contributorHandleId: string;
     text: string;
     sourceType: "text" | "voice";
+    displayLang?: SummaryDisplayLang;
   },
   {
     accepted: boolean;
     classificationMeta: ReturnType<typeof mapClassificationMeta>;
   }
-> = async ({ spaceId, contributorHandleId, text, sourceType }, context) => {
+> = async ({ spaceId, contributorHandleId, text, sourceType, displayLang }, context) => {
   const trimmed = text.trim();
   if (!trimmed) {
     throw new HttpError(400, "Feedback text is required");
@@ -237,35 +330,25 @@ export const submitFeedback: SubmitFeedback<
     },
   });
 
-  const totals = await context.entities.FeedbackEntry.groupBy({
-    by: ["tone"],
-    where: { spaceId },
-    _count: { _all: true },
-  });
-
-  let positiveCount = 0;
-  let negativeCount = 0;
-  for (const row of totals) {
-    if (row.tone === TONE.praise) positiveCount = row._count._all;
-    if (row.tone === TONE.constructive_criticism) negativeCount = row._count._all;
-  }
-  const totalCount = positiveCount + negativeCount;
-
-  await context.entities.SpaceSummary.update({
+  const classificationMeta = await getClassificationMetaFromFeedback(
+    spaceId,
+    context.entities.FeedbackEntry,
+  );
+  await context.entities.SpaceSummary.updateMany({
     where: { spaceId },
     data: {
-      totalCount,
-      positiveCount,
-      negativeCount,
       jobStatus: JOB.pending,
+      updatedAt: new Date(),
     },
   });
-
-  void regenerateSpaceSummary(spaceId, context.entities).catch((err) => {
-    console.error("regenerateSpaceSummary failed", err);
-    void context.entities.SpaceSummary.update({
-      where: { spaceId },
-      data: { jobStatus: JOB.failed },
+  void regenerateExperimentAggregations(
+    spaceId,
+    context.entities,
+    normalizeSummaryDisplayLang(displayLang),
+  ).catch((err) => {
+    console.error("[submitFeedback] async summary regeneration failed", {
+      spaceId,
+      err,
     });
   });
 
@@ -274,16 +357,12 @@ export const submitFeedback: SubmitFeedback<
     sourceType,
     textChars: trimmed.length,
     tone,
-    totalCount,
+    totalCount: classificationMeta.totalCount,
   });
 
   return {
     accepted: true,
-    classificationMeta: mapClassificationMeta({
-      totalCount,
-      positiveCount,
-      negativeCount,
-    }),
+    classificationMeta,
   };
 };
 
@@ -307,7 +386,6 @@ export const getSpaceSummary: GetSpaceSummary<
       summaryTextBg: string | null;
       langStatusEn: string;
       langStatusBg: string;
-      jobError: string | null;
       jobStatus: string;
       updatedAt: string | null;
     }>;
@@ -329,37 +407,7 @@ export const getSpaceSummary: GetSpaceSummary<
     throw new HttpError(404, "Space not found");
   }
 
-  await seedSummaryPromptAppSettingsIfMissing(context.entities.AppSetting);
-
-  await ensureExperimentDefaultsForSpace(spaceId, context.entities);
-  const reconciled = await reconcileExperimentDeckWithSingleDefaultPrompt(
-    spaceId,
-    context.entities,
-  );
-  if (reconciled) {
-    await context.entities.SpaceSummary.update({
-      where: { spaceId },
-      data: { jobStatus: JOB.pending },
-    });
-    void regenerateExperimentAggregations(spaceId, context.entities).catch(
-      (err) => {
-        console.error("reconcileExperimentDeck regenerate failed", err);
-        void context.entities.SpaceSummary.update({
-          where: { spaceId },
-          data: { jobStatus: JOB.failed },
-        });
-      },
-    );
-  }
-
-  const agg = await context.entities.SpaceSummary.findUnique({
-    where: { spaceId },
-  });
-  if (!agg) {
-    throw new HttpError(500, "Space summary missing");
-  }
-
-  const [promptRows, modelRows, rawAggs, summaryPromptInput] = await Promise.all([
+  const [promptRows, modelRows, rawAggs, summaryPromptInput, classificationMeta] = await Promise.all([
     context.entities.SpacePrompt.findMany({
       where: { spaceId },
       orderBy: { slug: "asc" },
@@ -370,72 +418,17 @@ export const getSpaceSummary: GetSpaceSummary<
       orderBy: { slug: "asc" },
       select: { slug: true, displayName: true, modelApiId: true },
     }),
-    context.entities.SpaceSummaryAggregation.findMany({
+    context.entities.SpaceSummary.findMany({
       where: { spaceId },
       include: { prompt: true, spaceModel: true },
     }),
     getSummaryPromptInputFromDb(context.entities.AppSetting),
+    getClassificationMetaFromFeedback(spaceId, context.entities.FeedbackEntry),
   ]);
+  const combined = combineLanguageRows(rawAggs);
+  const primary = pickPrimaryAggregation(combined);
 
-  const hasLlmKeys = !!(
-    process.env.ANTHROPIC_API_KEY?.trim() ||
-    process.env.GEMINI_API_KEY?.trim() ||
-    process.env.OPENAI_API_KEY?.trim()
-  );
-  // Legacy rows only: EN narrative exists but BG column was never filled.
-  // Do not use langStatusBg here — during generation EN can be ready while BG is
-  // still pending, and polling getSpaceSummary would otherwise restart regeneration
-  // every few seconds (BG UI + jobStatus ready).
-  const needsBulgarianBackfill =
-    lang === "bg" &&
-    hasLlmKeys &&
-    rawAggs.length > 0 &&
-    rawAggs.some((r) => !!r.summaryText?.trim() && !r.summaryTextBg?.trim());
-
-  /** Rows were seeded as pending but generation never ran (e.g. legacy spaces). */
-  const experimentDeckStuckPending =
-    rawAggs.length > 0 &&
-    agg.jobStatus === JOB.ready &&
-    rawAggs.every(
-      (r) =>
-        r.jobStatus === JOB.pending &&
-        r.langStatusEn === JOB.pending &&
-        r.langStatusBg === JOB.pending &&
-        !r.summaryText?.trim() &&
-        !r.summaryTextBg?.trim(),
-    );
-
-  let summaryJobStatus = agg.jobStatus;
-
-  if (experimentDeckStuckPending) {
-    await context.entities.SpaceSummary.update({
-      where: { spaceId },
-      data: { jobStatus: JOB.pending },
-    });
-    summaryJobStatus = JOB.pending;
-    void regenerateExperimentAggregations(spaceId, context.entities).catch((err) => {
-      console.error("getSpaceSummary stuck experiment deck regenerate failed", err);
-      void context.entities.SpaceSummary.update({
-        where: { spaceId },
-        data: { jobStatus: JOB.failed },
-      });
-    });
-  } else if (needsBulgarianBackfill && summaryJobStatus !== JOB.pending) {
-    await context.entities.SpaceSummary.update({
-      where: { spaceId },
-      data: { jobStatus: JOB.pending },
-    });
-    summaryJobStatus = JOB.pending;
-    void regenerateExperimentAggregations(spaceId, context.entities).catch((err) => {
-      console.error("Bulgarian summary backfill regenerate failed", err);
-      void context.entities.SpaceSummary.update({
-        where: { spaceId },
-        data: { jobStatus: JOB.failed },
-      });
-    });
-  }
-
-  const experimentAggregations = [...rawAggs]
+  const experimentAggregations = [...combined]
     .sort((a, b) => {
       const p = a.prompt.slug.localeCompare(b.prompt.slug);
       if (p !== 0) return p;
@@ -448,20 +441,19 @@ export const getSpaceSummary: GetSpaceSummary<
       modelSlug: row.spaceModel.slug,
       modelDisplayName: row.spaceModel.displayName,
       modelApiId: row.spaceModel.modelApiId,
-      summaryTextEn: row.summaryText,
+      summaryTextEn: row.summaryTextEn,
       summaryTextBg: row.summaryTextBg,
       langStatusEn: row.langStatusEn,
       langStatusBg: row.langStatusBg,
-      jobError: row.jobError ?? null,
       jobStatus: row.jobStatus,
       updatedAt: row.updatedAt ? row.updatedAt.toISOString() : null,
     }));
 
   return {
-    summary: pickSummaryForDisplay(agg, lang),
-    classificationMeta: mapClassificationMeta(agg),
-    updatedAt: agg.updatedAt ? agg.updatedAt.toISOString() : null,
-    jobStatus: summaryJobStatus,
+    summary: primary ? pickSummaryForDisplay(primary, lang) : null,
+    classificationMeta,
+    updatedAt: primary?.updatedAt ? primary.updatedAt.toISOString() : null,
+    jobStatus: primary?.jobStatus ?? JOB.pending,
     spaceName: space.name,
     shortCode: space.shortCode,
     experimentAggregations,
@@ -559,7 +551,7 @@ export const saveExperimentDeck: SaveExperimentDeck<
     seenM.add(s);
   }
 
-  await context.entities.SpaceSummaryAggregation.deleteMany({
+  await context.entities.SpaceSummary.deleteMany({
     where: { spaceId },
   });
   await context.entities.SpacePrompt.deleteMany({
@@ -592,19 +584,6 @@ export const saveExperimentDeck: SaveExperimentDeck<
   });
   await syncExperimentAggregationRows(spaceId, context.entities);
 
-  await context.entities.SpaceSummary.update({
-    where: { spaceId },
-    data: { jobStatus: JOB.pending },
-  });
-
-  void regenerateExperimentAggregations(spaceId, context.entities).catch((err) => {
-    console.error("saveExperimentDeck regenerate failed", err);
-    void context.entities.SpaceSummary.update({
-      where: { spaceId },
-      data: { jobStatus: JOB.failed },
-    });
-  });
-
   devServerLog("saveExperimentDeck", {
     spaceId,
     shortCode: space.shortCode,
@@ -614,3 +593,4 @@ export const saveExperimentDeck: SaveExperimentDeck<
 
   return { ok: true as const };
 };
+
