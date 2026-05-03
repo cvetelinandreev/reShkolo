@@ -8,15 +8,16 @@ import {
   ArrowPathIcon,
   CheckIcon,
   ClipboardDocumentIcon,
-  XMarkIcon,
 } from "@heroicons/react/24/outline";
 import {
+  useEffect,
   useMemo,
   useState,
   type Dispatch,
   type ReactNode,
   type SetStateAction,
 } from "react";
+import { saveSpaceSummaryPrompt } from "wasp/client/operations";
 import type { HeaderLang } from "../shared/components/JournalAppHeader";
 
 export type ExperimentAggCard = {
@@ -37,6 +38,10 @@ export type ExperimentAggCard = {
 type Props = {
   lang: HeaderLang;
   aggs: ExperimentAggCard[];
+  spaceId: string;
+  contributorHandleId: string;
+  isPromptOwner: boolean;
+  onPromptSaved: () => void | Promise<void>;
 };
 
 function pickViewerText(
@@ -55,46 +60,169 @@ function ContainedHorizontalScrollStrip({ children }: { children: ReactNode }) {
   );
 }
 
-function PromptBodyModal(props: {
+function PromptEditorModal(props: {
   open: boolean;
   title: string;
-  body: string;
+  slug: string;
+  initialBody: string;
   lang: HeaderLang;
+  isOwner: boolean;
+  spaceId: string;
+  contributorHandleId: string;
   onClose: () => void;
+  onSaved: () => void | Promise<void>;
 }) {
-  const closeAria = props.lang === "bg" ? "Затвори" : "Close";
+  const [draft, setDraft] = useState(props.initialBody);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [keyboardInset, setKeyboardInset] = useState(0);
+
+  useEffect(() => {
+    if (!props.open) return;
+    setDraft(props.initialBody);
+    setError(null);
+  }, [props.open, props.initialBody]);
+
+  useEffect(() => {
+    if (!props.open) {
+      setKeyboardInset(0);
+      return;
+    }
+    const vv = window.visualViewport;
+    if (!vv) return;
+
+    function measure() {
+      const v = window.visualViewport;
+      if (!v) return;
+      const obscured = Math.max(0, window.innerHeight - v.offsetTop - v.height);
+      setKeyboardInset(obscured);
+    }
+
+    measure();
+    vv.addEventListener("resize", measure);
+    vv.addEventListener("scroll", measure);
+    window.addEventListener("resize", measure);
+    return () => {
+      vv.removeEventListener("resize", measure);
+      vv.removeEventListener("scroll", measure);
+      window.removeEventListener("resize", measure);
+    };
+  }, [props.open]);
+
+  const discardLabel = props.lang === "bg" ? "Откажи" : "Discard";
+  const displayLang = props.lang === "bg" ? "bg" : "en";
+  const saveDisabled = !props.isOwner || saving;
+
+  async function handleSave() {
+    if (saveDisabled) return;
+    const body = draft.trimEnd();
+    setSaving(true);
+    setError(null);
+    try {
+      await saveSpaceSummaryPrompt({
+        spaceId: props.spaceId,
+        contributorHandleId: props.contributorHandleId,
+        promptSlug: props.slug,
+        summaryPromptOutput: body,
+        displayLang,
+      });
+      props.onClose();
+      await props.onSaved();
+    } catch (e) {
+      const msg =
+        e instanceof Error && e.message.trim().length > 0
+          ? e.message
+          : props.lang === "bg"
+            ? "Неуспешно записване."
+            : "Could not save.";
+      setError(msg);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  const saveLabel = props.lang === "bg" ? "Запази" : "Save";
+  const savingLabel = props.lang === "bg" ? "Записване…" : "Saving…";
+
+  const outerPadBottomStyle =
+    keyboardInset > 0 ? ({ paddingBottom: keyboardInset } as const) : undefined;
+  const outerPadBottomClass =
+    keyboardInset === 0 ? "pb-[max(0.5rem,env(safe-area-inset-bottom))]" : "";
+
   return (
     <Dialog open={props.open} onClose={props.onClose} className="relative z-[100]">
       <DialogBackdrop className="fixed inset-0 bg-black/45" transition={false} />
-      <div className="fixed inset-0 flex flex-col px-2 pb-[max(0.5rem,env(safe-area-inset-bottom))] pt-[max(0.5rem,env(safe-area-inset-top))] sm:px-3 sm:pb-3 sm:pt-3">
-        <DialogPanel className="relative flex min-h-0 flex-1 flex-col overflow-hidden rounded-2xl bg-white shadow-xl">
-          <button
-            type="button"
-            onClick={props.onClose}
-            className="absolute right-3 top-3 z-20 inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-white/95 text-neutral-600 shadow-sm ring-1 ring-neutral-200 hover:bg-neutral-100 hover:text-neutral-900"
-            aria-label={closeAria}
-          >
-            <XMarkIcon className="h-5 w-5" aria-hidden />
-          </button>
-          <div className="sticky top-0 z-10 shrink-0 border-b border-neutral-200 bg-white px-4 py-3 pr-14">
-            <DialogTitle
-              className="min-w-0 truncate text-sm font-medium text-neutral-900"
-              title={props.title}
-            >
-              {props.title}
-            </DialogTitle>
+      <div
+        className={`fixed inset-0 flex flex-col pt-[max(0.5rem,env(safe-area-inset-top))] ${outerPadBottomClass}`}
+        style={outerPadBottomStyle}
+      >
+        <DialogPanel className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-white shadow-none ring-0">
+          <DialogTitle className="sr-only">{props.title}</DialogTitle>
+
+          <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+            <div className="flex min-h-0 w-full flex-1 flex-col">
+              <textarea
+                value={draft}
+                readOnly={!props.isOwner}
+                onChange={(e) => setDraft(e.target.value)}
+                spellCheck={false}
+                aria-label={props.title}
+                autoCapitalize="none"
+                autoCorrect="off"
+                className={`touch-manipulation box-border min-h-0 w-full flex-1 resize-none overflow-y-auto overscroll-y-contain border-0 bg-transparent px-4 py-3 text-[16px] leading-relaxed outline-none ring-0 focus:outline-none focus:ring-2 focus:ring-[#1583ca]/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#1583ca]/30 ${
+                  props.isOwner ? "text-neutral-800" : "cursor-default bg-neutral-50 text-neutral-700"
+                }`}
+              />
+            </div>
+
+            {error ? (
+              <div className="shrink-0 px-4 py-2 text-center">
+                <p className="text-sm text-red-700">{error}</p>
+              </div>
+            ) : null}
+
+            <div className="flex w-full shrink-0 items-center justify-end gap-3 border-t border-neutral-200 bg-white px-4 py-3">
+              <button
+                type="button"
+                disabled={saving}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  props.onClose();
+                }}
+                className="inline-flex h-11 min-w-[5.5rem] shrink-0 items-center justify-center rounded-xl px-4 text-sm font-medium text-neutral-700 ring-1 ring-neutral-200 hover:bg-neutral-50 disabled:cursor-not-allowed disabled:opacity-45"
+              >
+                {discardLabel}
+              </button>
+              <button
+                type="button"
+                disabled={saveDisabled}
+                onClick={() => void handleSave()}
+                className="inline-flex h-11 min-w-[5.5rem] shrink-0 items-center justify-center rounded-xl bg-[#1583ca] px-4 text-sm font-medium text-white shadow-sm hover:bg-[#1478b8] disabled:cursor-not-allowed disabled:opacity-45"
+              >
+                {saving ? savingLabel : saveLabel}
+              </button>
+            </div>
           </div>
-          <pre className="min-h-0 flex-1 overflow-y-auto overscroll-y-contain whitespace-pre-wrap p-4 text-sm leading-relaxed text-neutral-800">
-            {props.body}
-          </pre>
         </DialogPanel>
       </div>
     </Dialog>
   );
 }
 
+type DeckMode = "experimental" | "fixed";
+
+const FIXED_MODE_PROVIDER_SLUG = "anthropic";
+
+function readDeckMode(): DeckMode {
+  const raw = import.meta.env.REACT_APP_DECK_MODE;
+  return typeof raw === "string" && raw.trim().toLowerCase() === "fixed"
+    ? "fixed"
+    : "experimental";
+}
+
 type CardLabels = {
-  promptPrefix: string;
+  promptLinkLabel: string;
+  promptModalTitle: string;
   empty: string;
   pending: string;
   copyCard: string;
@@ -113,14 +241,11 @@ function AggregationModelCard(props: {
   const { card, lang, labels } = props;
   const viewerText = pickViewerText(card.summaryTextEn, card.summaryTextBg, lang)?.trim() ?? "";
   const isPending =
-    card.jobStatus === "pending" ||
-    card.langStatusEn === "pending" ||
-    card.langStatusBg === "pending";
+    lang === "bg" ? card.langStatusBg === "pending" : card.langStatusEn === "pending";
 
   async function copyCardText() {
-    const body =
-      viewerText || labels.noText;
-    const text = [card.modelApiId, `${labels.promptPrefix} ${card.promptSlug}`, "", body].join(
+    const body = viewerText || labels.noText;
+    const text = [card.modelApiId, `${labels.promptLinkLabel} (${card.promptSlug})`, "", body].join(
       "\n",
     );
     let copied = false;
@@ -168,9 +293,9 @@ function AggregationModelCard(props: {
           <button
             type="button"
             onClick={() => props.onOpenPrompt(card.promptSlug, card.summaryPromptOutput)}
-            className="max-w-[55%] shrink-0 pl-2 text-right text-sm font-medium text-[#1583ca] underline-offset-2 hover:underline [overflow-wrap:anywhere]"
+            className="shrink-0 pl-2 text-right text-sm font-medium lowercase text-[#1583ca] underline-offset-2 hover:underline [overflow-wrap:anywhere]"
           >
-            <span className="text-neutral-500">{labels.promptPrefix}</span> {card.promptSlug}
+            {labels.promptLinkLabel}
           </button>
         </div>
       </header>
@@ -178,15 +303,15 @@ function AggregationModelCard(props: {
       <div className="relative min-h-[5.5rem] min-w-0 flex-1 text-sm leading-relaxed text-neutral-900">
         {isPending ? (
           <div
-            className="absolute inset-0 flex flex-col items-center justify-center gap-2 py-4"
+            className="absolute inset-0 flex items-center justify-center py-4"
             role="status"
             aria-live="polite"
+            aria-label={labels.pending}
           >
             <ArrowPathIcon
               className="h-8 w-8 shrink-0 animate-spin text-[#1583ca]"
               aria-hidden
             />
-            <span className="text-xs text-neutral-500">{labels.pending}</span>
           </div>
         ) : (
           <p className="whitespace-pre-wrap break-words [overflow-wrap:anywhere]">
@@ -212,18 +337,63 @@ function AggregationModelCard(props: {
   );
 }
 
+function FixedModeSummary(props: {
+  card: ExperimentAggCard;
+  lang: HeaderLang;
+  labels: CardLabels;
+  onOpenPrompt: (slug: string, body: string) => void;
+}) {
+  const { card, lang, labels } = props;
+  const viewerText = pickViewerText(card.summaryTextEn, card.summaryTextBg, lang)?.trim() ?? "";
+  const isPending =
+    lang === "bg" ? card.langStatusBg === "pending" : card.langStatusEn === "pending";
+
+  return (
+    <div className="min-w-0 w-full">
+      <div className="mb-2 flex justify-end">
+        <button
+          type="button"
+          onClick={() => props.onOpenPrompt(card.promptSlug, card.summaryPromptOutput)}
+          className="text-sm font-medium lowercase text-[#1583ca] underline-offset-2 hover:underline"
+        >
+          {labels.promptLinkLabel}
+        </button>
+      </div>
+      {isPending ? (
+        <div
+          className="flex items-center justify-center py-4"
+          role="status"
+          aria-live="polite"
+          aria-label={labels.pending}
+        >
+          <ArrowPathIcon
+            className="h-8 w-8 shrink-0 animate-spin text-[#1583ca]"
+            aria-hidden
+          />
+        </div>
+      ) : (
+        <p className="whitespace-pre-wrap break-words text-sm leading-relaxed text-neutral-900 [overflow-wrap:anywhere]">
+          {viewerText || labels.noText}
+        </p>
+      )}
+    </div>
+  );
+}
+
 export function SummaryAggregationDeck(props: Props) {
   const [promptModal, setPromptModal] = useState<{
     slug: string;
     body: string;
   } | null>(null);
   const [copiedCardId, setCopiedCardId] = useState<string | null>(null);
+  const mode = useMemo<DeckMode>(() => readDeckMode(), []);
 
   const labels: CardLabels = useMemo(
     () =>
       props.lang === "bg"
         ? {
-            promptPrefix: "Промпт:",
+            promptLinkLabel: "промпт",
+            promptModalTitle: "Промпт",
             empty: "Няма карти за показване.",
             pending: "Генериране…",
             copyCard: "Копирай",
@@ -231,7 +401,8 @@ export function SummaryAggregationDeck(props: Props) {
             noText: "Няма текст.",
           }
         : {
-            promptPrefix: "Prompt:",
+            promptLinkLabel: "prompt",
+            promptModalTitle: "Prompt",
             empty: "No aggregation cards yet.",
             pending: "Generating…",
             copyCard: "Copy",
@@ -241,9 +412,25 @@ export function SummaryAggregationDeck(props: Props) {
     [props.lang],
   );
 
+  const fixedCard =
+    mode === "fixed"
+      ? props.aggs.find((c) => c.modelSlug === FIXED_MODE_PROVIDER_SLUG) ?? null
+      : null;
+
   return (
     <section className="min-w-0 w-full max-w-full space-y-3">
-      {props.aggs.length === 0 ? (
+      {mode === "fixed" ? (
+        fixedCard ? (
+          <FixedModeSummary
+            card={fixedCard}
+            lang={props.lang}
+            labels={labels}
+            onOpenPrompt={(slug, body) => setPromptModal({ slug, body })}
+          />
+        ) : (
+          <p className="text-sm text-neutral-600">{labels.empty}</p>
+        )
+      ) : props.aggs.length === 0 ? (
         <p className="text-sm text-neutral-600">{labels.empty}</p>
       ) : (
         <ContainedHorizontalScrollStrip>
@@ -261,12 +448,17 @@ export function SummaryAggregationDeck(props: Props) {
         </ContainedHorizontalScrollStrip>
       )}
 
-      <PromptBodyModal
+      <PromptEditorModal
         open={promptModal != null}
-        title={promptModal ? `${labels.promptPrefix} ${promptModal.slug}` : ""}
-        body={promptModal?.body ?? ""}
+        title={promptModal ? labels.promptModalTitle : ""}
+        slug={promptModal?.slug ?? ""}
+        initialBody={promptModal?.body ?? ""}
         lang={props.lang}
+        isOwner={props.isPromptOwner}
+        spaceId={props.spaceId}
+        contributorHandleId={props.contributorHandleId}
         onClose={() => setPromptModal(null)}
+        onSaved={props.onPromptSaved}
       />
     </section>
   );

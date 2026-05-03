@@ -8,6 +8,7 @@ import {
 } from "wasp/client/operations";
 import { SummaryAggregationDeck } from "./SummaryAggregationDeck";
 import { Snackbar } from "../shared/components/Snackbar";
+import { InformationCircleIcon, TrashIcon } from "@heroicons/react/24/outline";
 import { OpenBookIcon } from "../shared/components/icons/OpenBookIcon";
 import { PaperPlaneIcon } from "../shared/components/icons/PaperPlaneIcon";
 import {
@@ -31,6 +32,7 @@ type LocalSpace = {
   shortCode: string;
   name: string | null;
   contributorHandleId: string;
+  ownerContributorHandleId?: string | null;
 };
 
 function loadSpaces(): LocalSpace[] {
@@ -52,6 +54,55 @@ function displayNameForSpace(s: LocalSpace): string {
   const n = s.name?.trim();
   if (n) return n;
   return s.shortCode;
+}
+
+function formatFeedbackDateRange(
+  lang: HeaderLang,
+  firstFeedbackAt: string | null,
+  lastFeedbackAt: string | null,
+): { sameDay: boolean; text: string } | null {
+  if (!firstFeedbackAt || !lastFeedbackAt) return null;
+  const fmt = new Intl.DateTimeFormat(lang === "bg" ? "bg-BG" : "en-GB", {
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+  });
+  const start = fmt.format(new Date(firstFeedbackAt));
+  const end = fmt.format(new Date(lastFeedbackAt));
+  return start === end
+    ? { sameDay: true, text: start }
+    : { sameDay: false, text: `${start} – ${end}` };
+}
+
+function formatFeedbackStats(
+  lang: HeaderLang,
+  totalCount: number,
+  placesCount: number,
+  firstFeedbackAt: string | null,
+  lastFeedbackAt: string | null,
+): string {
+  if (totalCount === 0) {
+    return lang === "bg" ? "Все още няма отзиви." : "No feedback yet.";
+  }
+  const range = formatFeedbackDateRange(lang, firstFeedbackAt, lastFeedbackAt);
+  if (lang === "bg") {
+    const reviews = totalCount === 1 ? "1 отзив" : `${totalCount} отзива`;
+    const voices = placesCount === 1 ? "1 източник" : `${placesCount} източника`;
+    const tail = range
+      ? range.sameDay
+        ? `, на ${range.text}`
+        : `, ${range.text}`
+      : "";
+    return `${reviews} от ${voices}${tail}.`;
+  }
+  const reviews = totalCount === 1 ? "1 feedback" : `${totalCount} feedbacks`;
+  const voices = placesCount === 1 ? "1 source" : `${placesCount} sources`;
+  const tail = range
+    ? range.sameDay
+      ? `, on ${range.text}`
+      : `, ${range.text}`
+    : "";
+  return `${reviews} from ${voices}${tail}.`;
 }
 
 function formatCreateSpaceFailure(error: unknown, lang: HeaderLang): string {
@@ -186,6 +237,19 @@ export function SpacePage() {
     null,
   );
   const [summaryLoadError, setSummaryLoadError] = useState<string | null>(null);
+  const [statsOpen, setStatsOpen] = useState(false);
+  const statsTooltipRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!statsOpen) return;
+    const onPointerDown = (e: PointerEvent) => {
+      if (!statsTooltipRef.current) return;
+      if (!statsTooltipRef.current.contains(e.target as Node)) {
+        setStatsOpen(false);
+      }
+    };
+    document.addEventListener("pointerdown", onPointerDown);
+    return () => document.removeEventListener("pointerdown", onPointerDown);
+  }, [statsOpen]);
 
   const slugResolveGen = useRef(0);
   const appFeedbackJoinStoppedRef = useRef(false);
@@ -258,6 +322,7 @@ export function SpacePage() {
               shortCode: res.shortCode,
               name: res.spaceName,
               contributorHandleId: res.contributorHandleId,
+              ownerContributorHandleId: res.ownerContributorHandleId ?? null,
             },
           ];
         });
@@ -307,6 +372,7 @@ export function SpacePage() {
               shortCode: res.shortCode,
               name: res.spaceName,
               contributorHandleId: res.contributorHandleId,
+              ownerContributorHandleId: res.ownerContributorHandleId ?? null,
             },
           ];
         });
@@ -367,6 +433,7 @@ export function SpacePage() {
             shortCode: res.shortCode,
             name: res.spaceName,
             contributorHandleId: res.contributorHandleId,
+            ownerContributorHandleId: res.ownerContributorHandleId ?? null,
           },
         ];
       });
@@ -426,11 +493,8 @@ export function SpacePage() {
           });
           setSummaryPayload(data);
           setSummaryLoadError(null);
-          const hasPending = data.experimentAggregations.some(
-            (row) =>
-              row.jobStatus === "pending" ||
-              row.langStatusEn === "pending" ||
-              row.langStatusBg === "pending",
+          const hasPending = data.experimentAggregations.some((row) =>
+            lang === "bg" ? row.langStatusBg === "pending" : row.langStatusEn === "pending",
           );
           if (!hasPending) return;
         } catch (err) {
@@ -444,6 +508,22 @@ export function SpacePage() {
     },
     [lang],
   );
+
+  const handlePromptSaved = useCallback(async () => {
+    if (!activeSpaceId) return;
+    await retryLoadSummaries();
+    await pollSummaryUntilSettled(activeSpaceId);
+  }, [activeSpaceId, retryLoadSummaries, pollSummaryUntilSettled]);
+
+  useEffect(() => {
+    if (!activeSpaceId || summaryPayload == null) return;
+    const oid = summaryPayload.ownerContributorHandleId;
+    setSpaces((prev) =>
+      prev.map((s) =>
+        s.spaceId === activeSpaceId ? { ...s, ownerContributorHandleId: oid } : s,
+      ),
+    );
+  }, [activeSpaceId, summaryPayload?.ownerContributorHandleId]);
 
   useEffect(() => {
     if (!activeSpaceId) {
@@ -489,6 +569,7 @@ export function SpacePage() {
         shortCode: res.shortCode,
         name: name || null,
         contributorHandleId: res.contributorHandleId,
+        ownerContributorHandleId: res.ownerContributorHandleId,
       };
       setSpaces((prev) => [...prev.filter((s) => s.spaceId !== entry.spaceId), entry]);
       setActiveSpaceId(entry.spaceId);
@@ -532,6 +613,15 @@ export function SpacePage() {
         displayLang: lang === "bg" ? "bg" : "en",
       });
       setFeedbackText("");
+      if (res.contributorHandleId !== activeSpace.contributorHandleId) {
+        setSpaces((prev) =>
+          prev.map((s) =>
+            s.spaceId === activeSpace.spaceId
+              ? { ...s, contributorHandleId: res.contributorHandleId }
+              : s,
+          ),
+        );
+      }
       setSummaryPayload((prev) =>
         prev && prev.shortCode === activeSpace.shortCode
           ? {
@@ -685,6 +775,40 @@ export function SpacePage() {
                 <h1 className="text-xl font-medium tracking-wide text-neutral-900">
                   {lang === "bg" ? "ОБЩО" : "OVERVIEW"}
                 </h1>
+                {(summaryPayload?.classificationMeta.totalCount ?? 0) > 0 && (
+                  <div className="relative" ref={statsTooltipRef}>
+                    <button
+                      type="button"
+                      onClick={() => setStatsOpen((o) => !o)}
+                      aria-label={
+                        lang === "bg" ? "Покажи статистика" : "Show stats"
+                      }
+                      aria-expanded={statsOpen}
+                      className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-neutral-400 hover:text-neutral-600"
+                    >
+                      <InformationCircleIcon
+                        className="h-4 w-4"
+                        aria-hidden
+                      />
+                    </button>
+                    {statsOpen && (
+                      <div
+                        role="tooltip"
+                        className="absolute left-0 top-full z-50 mt-1 w-max max-w-[min(16rem,calc(100vw-7rem))] whitespace-normal break-words rounded-lg bg-neutral-800 px-3 py-2 text-sm leading-snug text-white shadow-lg"
+                      >
+                        {formatFeedbackStats(
+                          lang,
+                          summaryPayload?.classificationMeta.totalCount ?? 0,
+                          summaryPayload?.classificationMeta.placesCount ?? 0,
+                          summaryPayload?.classificationMeta.firstFeedbackAt ??
+                            null,
+                          summaryPayload?.classificationMeta.lastFeedbackAt ??
+                            null,
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
 
               <div
@@ -716,13 +840,23 @@ export function SpacePage() {
               {summaryLoadError && (
                 <div className="space-y-2">
                   <p className="text-sm text-red-600">{summaryLoadError}</p>
-                  <button
-                    type="button"
-                    className="text-left text-sm font-medium text-[#1583ca] underline decoration-[#1583ca]/40 underline-offset-2 hover:decoration-[#1583ca]"
-                    onClick={() => void retryLoadSummaries()}
-                  >
-                    {lang === "bg" ? "Опитайте отново" : "Try again"}
-                  </button>
+                  <div className="flex flex-wrap items-center gap-4">
+                    <button
+                      type="button"
+                      className="text-left text-sm font-medium text-[#1583ca] underline decoration-[#1583ca]/40 underline-offset-2 hover:decoration-[#1583ca]"
+                      onClick={() => void retryLoadSummaries()}
+                    >
+                      {lang === "bg" ? "Опитайте отново" : "Try again"}
+                    </button>
+                    <button
+                      type="button"
+                      className="inline-flex items-center gap-1 text-sm font-medium text-red-600 underline decoration-red-600/40 underline-offset-2 hover:decoration-red-600"
+                      onClick={() => handleDeleteSpace(activeSpace.spaceId)}
+                    >
+                      <TrashIcon className="h-4 w-4" aria-hidden />
+                      {lang === "bg" ? "Напусни" : "Leave"}
+                    </button>
+                  </div>
                 </div>
               )}
               {!summaryPayload && !summaryLoadError && (
@@ -734,6 +868,13 @@ export function SpacePage() {
                 <SummaryAggregationDeck
                   lang={lang}
                   aggs={summaryPayload.experimentAggregations}
+                  spaceId={activeSpace.spaceId}
+                  contributorHandleId={activeSpace.contributorHandleId}
+                  isPromptOwner={
+                    summaryPayload.ownerContributorHandleId != null &&
+                    summaryPayload.ownerContributorHandleId === activeSpace.contributorHandleId
+                  }
+                  onPromptSaved={handlePromptSaved}
                 />
               )}
             </div>

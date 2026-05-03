@@ -1,11 +1,12 @@
-import { devServerLog } from "../server/devLog";
 import { callLlmText } from "../server/llm/anthropic";
 import {
-  ANTHROPIC_SONNET_46_MODEL,
-  GEMINI_25_FLASH_LITE_MODEL,
-  GROQ_LLAMA_4_SCOUT_MODEL,
-  OPENAI_GPT_55_MINI_MODEL,
-} from "../server/llm/modelIds";
+  ALL_PROVIDER_SLUGS,
+  getProviderInfo,
+  hasAnyProviderKey,
+  isModelProviderSlug,
+  type ModelProviderInfo,
+  type ModelProviderSlug,
+} from "../server/llm/modelProviders";
 import {
   buildAggregationUserMessage,
   emptyAggregationUserMessage,
@@ -121,29 +122,10 @@ export type ExperimentEntities = {
       data: Array<{ spaceId: string; slug: string; summaryPromptOutput: string }>;
     }) => Promise<unknown>;
   };
-  SpaceModel: {
-    findMany: (args: {
-      where: { spaceId: string };
-      orderBy: { slug: "asc" };
-    }) => Promise<Array<{ id: string; slug: string; displayName: string; modelApiId: string }>>;
-    update: (args: {
-      where: { id: string };
-      data: { modelApiId: string; displayName?: string };
-    }) => Promise<unknown>;
-    createMany: (args: {
-      data: Array<{
-        spaceId: string;
-        slug: string;
-        displayName: string;
-        modelApiId: string;
-      }>;
-    }) => Promise<unknown>;
-    deleteMany: (args: { where: { spaceId: string } }) => Promise<unknown>;
-  };
   SpaceSummary: {
     deleteMany: (args: { where: { spaceId: string } }) => Promise<unknown>;
     updateMany: (args: {
-      where: { spaceId: string; language?: string; promptId?: string; spaceModelId?: string };
+      where: { spaceId: string; language?: string; promptId?: string; modelSlug?: string };
       data: {
         jobStatus: string;
         summaryText?: string | null;
@@ -154,7 +136,7 @@ export type ExperimentEntities = {
       data: Array<{
         spaceId: string;
         promptId: string;
-        spaceModelId: string;
+        modelSlug: string;
         language: string;
         jobStatus: string;
       }>;
@@ -163,19 +145,17 @@ export type ExperimentEntities = {
       where: { spaceId: string };
       include: {
         prompt: true;
-        spaceModel: true;
       };
     }) => Promise<
       Array<{
         id: string;
         spaceId: string;
         promptId: string;
-        spaceModelId: string;
+        modelSlug: string;
         language: string;
         summaryText: string | null;
         jobStatus: string;
         prompt: { slug: string; summaryPromptOutput: string };
-        spaceModel: { slug: string; displayName: string; modelApiId: string };
       }>
     >;
     update: (args: {
@@ -189,42 +169,8 @@ export type ExperimentEntities = {
   };
 };
 
-export function resolveDefaultSummaryModelId(): string {
-  const hasAn = !!process.env.ANTHROPIC_API_KEY?.trim();
-  const hasGroq = !!process.env.GROQ_API_KEY?.trim();
-  const hasGemini = !!process.env.GEMINI_API_KEY?.trim();
-  const hasOpenAI = !!process.env.OPENAI_API_KEY?.trim();
-  if (hasAn) return process.env.ANTHROPIC_MODEL_SUMMARY?.trim() || ANTHROPIC_SONNET_46_MODEL;
-  // Groq before OpenAI/Gemini: generous free-tier throughput vs tight Gemini caps.
-  if (hasGroq) return process.env.GROQ_MODEL_SUMMARY?.trim() || GROQ_LLAMA_4_SCOUT_MODEL;
-  if (hasOpenAI) return process.env.OPENAI_MODEL_SUMMARY?.trim() || OPENAI_GPT_55_MINI_MODEL;
-  if (hasGemini) return process.env.GEMINI_MODEL_SUMMARY?.trim() || GEMINI_25_FLASH_LITE_MODEL;
-  return ANTHROPIC_SONNET_46_MODEL;
-}
-
-function defaultExperimentModels(): Array<{ slug: string; displayName: string; modelApiId: string }> {
-  return [
-    {
-      slug: "anthropic",
-      displayName: "Anthropic Sonnet",
-      modelApiId: process.env.ANTHROPIC_MODEL_SUMMARY?.trim() || ANTHROPIC_SONNET_46_MODEL,
-    },
-    {
-      slug: "groq",
-      displayName: "Groq Llama 4 Scout",
-      modelApiId: process.env.GROQ_MODEL_SUMMARY?.trim() || GROQ_LLAMA_4_SCOUT_MODEL,
-    },
-    {
-      slug: "gemini",
-      displayName: "Gemini 2.5 Flash Lite",
-      modelApiId: process.env.GEMINI_MODEL_SUMMARY?.trim() || GEMINI_25_FLASH_LITE_MODEL,
-    },
-    {
-      slug: "openai",
-      displayName: "OpenAI GPT-5.5 mini",
-      modelApiId: process.env.OPENAI_MODEL_SUMMARY?.trim() || OPENAI_GPT_55_MINI_MODEL,
-    },
-  ];
+export function defaultExperimentModels(): ModelProviderInfo[] {
+  return ALL_PROVIDER_SLUGS.map((slug) => getProviderInfo(slug));
 }
 
 export async function syncExperimentAggregationRows(
@@ -236,40 +182,27 @@ export async function syncExperimentAggregationRows(
     where: { spaceId },
     orderBy: { slug: "asc" },
   });
-  const models = await entities.SpaceModel.findMany({
-    where: { spaceId },
-    orderBy: { slug: "asc" },
-  });
-  if (prompts.length === 0 || models.length === 0) {
-    return;
-  }
+  if (prompts.length === 0) return;
   const rows: Array<{
     spaceId: string;
     promptId: string;
-    spaceModelId: string;
+    modelSlug: string;
     language: string;
     jobStatus: string;
   }> = [];
   for (const p of prompts) {
-    for (const m of models) {
-      rows.push({
-        spaceId,
-        promptId: p.id,
-        spaceModelId: m.id,
-        language: "en",
-        jobStatus: JOB.pending,
-      });
-      rows.push({
-        spaceId,
-        promptId: p.id,
-        spaceModelId: m.id,
-        language: "bg",
-        jobStatus: JOB.pending,
-      });
+    for (const slug of ALL_PROVIDER_SLUGS) {
+      rows.push({ spaceId, promptId: p.id, modelSlug: slug, language: "en", jobStatus: JOB.pending });
+      rows.push({ spaceId, promptId: p.id, modelSlug: slug, language: "bg", jobStatus: JOB.pending });
     }
   }
   await entities.SpaceSummary.createMany({ data: rows });
 }
+
+const DEFAULT_EMPTY_SUMMARY_BG =
+  "Още никой не е изпратил нито похвала, нито забележка за {subject}. Можеш да бъдеш първият.";
+const DEFAULT_EMPTY_SUMMARY_EN =
+  "No one has submitted any praise or feedback about {subject} yet — you can be the first.";
 
 export async function ensureExperimentDefaultsForSpace(
   spaceId: string,
@@ -288,115 +221,40 @@ export async function ensureExperimentDefaultsForSpace(
     },
   });
 
-  await entities.SpaceModel.createMany({
-    data: defaultExperimentModels().map((m) => ({
-      spaceId,
-      slug: m.slug,
-      displayName: m.displayName,
-      modelApiId: m.modelApiId,
-    })),
-  });
-
   await syncExperimentAggregationRows(spaceId, entities);
-}
 
-/**
- * Removes the legacy `brief` prompt so only `default` remains, and aligns
- * experiment model rows with the current default provider deck.
- */
-export async function reconcileExperimentDeckWithSingleDefaultPrompt(
-  spaceId: string,
-  entities: ExperimentEntities,
-): Promise<boolean> {
-  let changed = false;
-
-  const briefDel = await entities.SpacePrompt.deleteMany({
-    where: { spaceId, slug: "brief" },
+  const space = await entities.Space.findUnique({
+    where: { id: spaceId },
+    select: { name: true, shortCode: true },
   });
-  if (briefDel.count > 0) {
-    changed = true;
-  }
-
-  const existingModels = await entities.SpaceModel.findMany({
+  const subject = space?.name?.trim() || space?.shortCode?.trim() || "this space";
+  const emptyEn = DEFAULT_EMPTY_SUMMARY_EN.replace("{subject}", subject);
+  const emptyBg = DEFAULT_EMPTY_SUMMARY_BG.replace("{subject}", subject);
+  const now = new Date();
+  await entities.SpaceSummary.updateMany({
     where: { spaceId },
-    orderBy: { slug: "asc" },
+    data: { summaryText: emptyEn, jobStatus: JOB.ready, updatedAt: now },
   });
-  const hasLegacyModelSlugs = existingModels.some(
-    (m) => m.slug === "primary" || m.slug === "secondary",
-  );
-  if (hasLegacyModelSlugs) {
-    await entities.SpaceModel.deleteMany({ where: { spaceId } });
-    await entities.SpaceModel.createMany({
-      data: defaultExperimentModels().map((m) => ({
-        spaceId,
-        slug: m.slug,
-        displayName: m.displayName,
-        modelApiId: m.modelApiId,
-      })),
-    });
-    changed = true;
-  }
-  const modelsAfterLegacyFix = hasLegacyModelSlugs
-    ? await entities.SpaceModel.findMany({
-        where: { spaceId },
-        orderBy: { slug: "asc" },
-      })
-    : existingModels;
-  const existingBySlug = new Map(modelsAfterLegacyFix.map((m) => [m.slug, m] as const));
-  const defaults = defaultExperimentModels();
-
-  for (const row of defaults) {
-    const current = existingBySlug.get(row.slug);
-    if (!current) {
-      await entities.SpaceModel.createMany({
-        data: [
-          {
-            spaceId,
-            slug: row.slug,
-            displayName: row.displayName,
-            modelApiId: row.modelApiId,
-          },
-        ],
-      });
-      changed = true;
-      continue;
-    }
-    const needsUpdate =
-      current.displayName.trim() !== row.displayName || current.modelApiId.trim() !== row.modelApiId;
-    if (needsUpdate) {
-      await entities.SpaceModel.update({
-        where: { id: current.id },
-        data: {
-          displayName: row.displayName,
-          modelApiId: row.modelApiId,
-        },
-      });
-      changed = true;
-    }
-  }
-
-  if (changed) {
-    await syncExperimentAggregationRows(spaceId, entities);
-  }
-
-  return changed;
+  await entities.SpaceSummary.updateMany({
+    where: { spaceId, language: "bg" },
+    data: { summaryText: emptyBg, jobStatus: JOB.ready, updatedAt: now },
+  });
 }
 
 type AggregationRowIncluded = {
   id: string;
   spaceId: string;
   promptId: string;
-  spaceModelId: string;
+  modelSlug: string;
   language: string;
   prompt: { slug: string; summaryPromptOutput: string };
-  spaceModel: { slug: string; displayName: string; modelApiId: string };
 };
 
 type AggregationPair = {
   promptId: string;
-  spaceModelId: string;
+  modelSlug: ModelProviderSlug;
   prompt: { slug: string; summaryPromptOutput: string };
-  spaceModel: { slug: string; displayName: string; modelApiId: string };
+  model: ModelProviderInfo;
   en: AggregationRowIncluded | null;
   bg: AggregationRowIncluded | null;
 };
@@ -404,17 +262,19 @@ type AggregationPair = {
 export function pairAggregationRows(rows: AggregationRowIncluded[]): AggregationPair[] {
   const map = new Map<string, AggregationPair>();
   for (const row of rows) {
-    const key = `${row.promptId}::${row.spaceModelId}`;
-    const cur =
+    const slug = row.modelSlug;
+    if (!isModelProviderSlug(slug)) continue;
+    const key = `${row.promptId}::${slug}`;
+    const cur: AggregationPair =
       map.get(key) ??
-      ({
+      {
         promptId: row.promptId,
-        spaceModelId: row.spaceModelId,
+        modelSlug: slug,
         prompt: row.prompt,
-        spaceModel: row.spaceModel,
+        model: getProviderInfo(slug),
         en: null,
         bg: null,
-      } satisfies AggregationPair);
+      };
     if (row.language === "bg") cur.bg = row;
     else cur.en = row;
     map.set(key, cur);
@@ -448,6 +308,7 @@ async function runAggregationCardGeneration(
   statusBg: string;
 }> {
   const { entries, spaceDisplayName, sharedInput } = deps;
+
   const bodyEn =
     entries.length === 0
       ? emptyAggregationUserMessage(spaceDisplayName, "English")
@@ -471,7 +332,7 @@ async function runAggregationCardGeneration(
     if (!pair.en) return;
     try {
       const t = await callLlmText({
-        model: pair.spaceModel.modelApiId,
+        model: pair.model.modelApiId,
         maxTokens: 700,
         debugLabel: "summary-en",
         system,
@@ -507,7 +368,7 @@ async function runAggregationCardGeneration(
     if (!pair.bg) return;
     try {
       const t = await callLlmText({
-        model: pair.spaceModel.modelApiId,
+        model: pair.model.modelApiId,
         maxTokens: 700,
         debugLabel: "summary-bg",
         system,
@@ -566,7 +427,7 @@ export async function generateExperimentAggregationRow(
 } | null> {
   const aggsForRow = await entities.SpaceSummary.findMany({
     where: { spaceId },
-    include: { prompt: true, spaceModel: true },
+    include: { prompt: true },
   });
   const pair = pairAggregationRows(aggsForRow).find(
     (p) => p.en?.id === aggregationId || p.bg?.id === aggregationId,
@@ -582,12 +443,7 @@ export async function generateExperimentAggregationRow(
     take: 200,
   });
 
-  const hasKeys = !!(
-    process.env.ANTHROPIC_API_KEY?.trim() ||
-    process.env.GROQ_API_KEY?.trim() ||
-    process.env.GEMINI_API_KEY?.trim() ||
-    process.env.OPENAI_API_KEY?.trim()
-  );
+  const hasKeys = hasAnyProviderKey();
 
   const space = await entities.Space.findUnique({
     where: { id: spaceId },
@@ -598,12 +454,12 @@ export async function generateExperimentAggregationRow(
 
   const aggs = await entities.SpaceSummary.findMany({
     where: { spaceId },
-    include: { prompt: true, spaceModel: true },
+    include: { prompt: true },
   });
   const sorted = [...pairAggregationRows(aggs)].sort((x, y) => {
     const ps = x.prompt.slug.localeCompare(y.prompt.slug);
     if (ps !== 0) return ps;
-    return x.spaceModel.slug.localeCompare(y.spaceModel.slug);
+    return x.modelSlug.localeCompare(y.modelSlug);
   });
   const primaryId = sorted[0]?.en?.id ?? sorted[0]?.bg?.id ?? null;
 
@@ -660,14 +516,7 @@ export async function regenerateExperimentAggregations(
     take: 200,
   });
 
-  const total = entries.length;
-
-  const hasKeys = !!(
-    process.env.ANTHROPIC_API_KEY?.trim() ||
-    process.env.GROQ_API_KEY?.trim() ||
-    process.env.GEMINI_API_KEY?.trim() ||
-    process.env.OPENAI_API_KEY?.trim()
-  );
+  const hasKeys = hasAnyProviderKey();
 
   const space = await entities.Space.findUnique({
     where: { id: spaceId },
@@ -678,15 +527,7 @@ export async function regenerateExperimentAggregations(
 
   const aggs = await entities.SpaceSummary.findMany({
     where: { spaceId },
-    include: { prompt: true, spaceModel: true },
-  });
-
-  devServerLog("regenerateExperimentAggregations", {
-    spaceId,
-    shortCode: space?.shortCode ?? null,
-    feedbackEntries: total,
-    aggregationRows: aggs.length,
-    hasLlmKeys: hasKeys,
+    include: { prompt: true },
   });
 
   if (aggs.length === 0) return;
@@ -720,10 +561,11 @@ export async function regenerateExperimentAggregations(
   const sorted = [...pairAggregationRows(aggs)].sort((a, b) => {
     const ps = a.prompt.slug.localeCompare(b.prompt.slug);
     if (ps !== 0) return ps;
-    return a.spaceModel.slug.localeCompare(b.spaceModel.slug);
+    return a.modelSlug.localeCompare(b.modelSlug);
   });
 
   const sharedInput = await getSummaryPromptInputFromDb(entities.AppSetting);
+
   const runPhase = async (lang: "en" | "bg") => {
     await Promise.all(
       sorted.map(async (pair) => {
@@ -746,7 +588,7 @@ export async function regenerateExperimentAggregations(
         );
         try {
           const text = await callLlmText({
-            model: pair.spaceModel.modelApiId,
+            model: pair.model.modelApiId,
             maxTokens: 700,
             debugLabel: lang === "bg" ? "summary-bg" : "summary-en",
             system,

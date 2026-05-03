@@ -13,11 +13,13 @@ model Space {
   name      String?
   createdAt DateTime @default(now())
 
-  contributorHandles     ContributorHandle[]
-  feedbackEntries        FeedbackEntry[]
-  summaries              SpaceSummary[]
-  spacePrompts        SpacePrompt[]
-  spaceModels         SpaceModel[]
+  contributorHandles ContributorHandle[] @relation("SpaceContributorMembership")
+  feedbackEntries    FeedbackEntry[]
+  summaries          SpaceSummary[]
+  spacePrompts       SpacePrompt[]
+
+  ownerContributorHandleId String?            @unique @map("owner_contributor_handle_id")
+  ownerContributorHandle   ContributorHandle? @relation("SpaceOwnerContributor", fields: [ownerContributorHandleId], references: [id], onDelete: SetNull)
 }
 
 model SpacePrompt {
@@ -33,26 +35,12 @@ model SpacePrompt {
   @@unique([spaceId, slug])
 }
 
-model SpaceModel {
-  id          String   @id @default(uuid())
-  createdAt   DateTime @default(now())
-  spaceId     String
-  slug        String
-  displayName String
-  modelApiId  String
-
-  space     Space           @relation(fields: [spaceId], references: [id], onDelete: Cascade)
-  summaries SpaceSummary[]
-
-  @@unique([spaceId, slug])
-}
-
 model SpaceSummary {
   id             String    @id @default(uuid())
   createdAt      DateTime  @default(now())
   spaceId        String
   promptId       String
-  spaceModelId   String
+  modelSlug      String
   language       String
   summaryText    String?   @db.Text
   jobStatus      String    @default("pending")
@@ -60,17 +48,18 @@ model SpaceSummary {
 
   space      Space       @relation(fields: [spaceId], references: [id], onDelete: Cascade)
   prompt     SpacePrompt @relation(fields: [promptId], references: [id], onDelete: Cascade)
-  spaceModel SpaceModel  @relation(fields: [spaceModelId], references: [id], onDelete: Cascade)
 
-  @@unique([promptId, spaceModelId, language])
+  @@unique([promptId, modelSlug, language])
 }
 
 model ContributorHandle {
   id        String   @id @default(uuid())
   createdAt DateTime @default(now())
 
-  space   Space  @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+  space   Space  @relation("SpaceContributorMembership", fields: [spaceId], references: [id], onDelete: Cascade)
   spaceId String
+
+  ownerOfSpace Space? @relation("SpaceOwnerContributor")
 
   feedbackEntries FeedbackEntry[]
 }

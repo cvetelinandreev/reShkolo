@@ -3,34 +3,31 @@ import test from "node:test";
 
 import { pairAggregationRows } from "./experimentAsync";
 
-test("pairAggregationRows groups rows by prompt and model", () => {
+test("pairAggregationRows groups rows by prompt and model slug", () => {
   const rows = [
     {
       id: "en-1",
       spaceId: "space-1",
       promptId: "prompt-a",
-      spaceModelId: "model-a",
+      modelSlug: "openai",
       language: "en",
       prompt: { slug: "default", summaryPromptOutput: "Output A" },
-      spaceModel: { slug: "gpt", displayName: "GPT", modelApiId: "openai/gpt" },
     },
     {
       id: "bg-1",
       spaceId: "space-1",
       promptId: "prompt-a",
-      spaceModelId: "model-a",
+      modelSlug: "openai",
       language: "bg",
       prompt: { slug: "default", summaryPromptOutput: "Output A" },
-      spaceModel: { slug: "gpt", displayName: "GPT", modelApiId: "openai/gpt" },
     },
     {
       id: "bg-2",
       spaceId: "space-1",
       promptId: "prompt-b",
-      spaceModelId: "model-a",
+      modelSlug: "openai",
       language: "bg",
       prompt: { slug: "concise", summaryPromptOutput: "Output B" },
-      spaceModel: { slug: "gpt", displayName: "GPT", modelApiId: "openai/gpt" },
     },
   ];
 
@@ -46,4 +43,18 @@ test("pairAggregationRows groups rows by prompt and model", () => {
   assert.ok(second);
   assert.equal(second.en, null);
   assert.equal(second.bg?.id, "bg-2");
+});
+
+test("pairAggregationRows skips rows with unknown model slugs", () => {
+  const rows = [
+    {
+      id: "en-1",
+      spaceId: "space-1",
+      promptId: "prompt-a",
+      modelSlug: "legacy-unknown",
+      language: "en",
+      prompt: { slug: "default", summaryPromptOutput: "Output" },
+    },
+  ];
+  assert.equal(pairAggregationRows(rows).length, 0);
 });

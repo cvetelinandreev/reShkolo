@@ -27,32 +27,32 @@ page SpaceMainPage {
 
 action createSpace {
   fn: import { createSpace } from "@src/spaces/operations",
-  entities: [Space, ContributorHandle, SpaceSummary, SpacePrompt, SpaceModel, FeedbackEntry, AppSetting]
+  entities: [Space, ContributorHandle, SpaceSummary, SpacePrompt, FeedbackEntry, AppSetting]
 }
 
 action joinSpace {
   fn: import { joinSpace } from "@src/spaces/operations",
-  entities: [Space, ContributorHandle, SpaceSummary, FeedbackEntry]
+  entities: [Space, ContributorHandle, SpaceSummary, SpacePrompt, FeedbackEntry]
 }
 
 action submitFeedback {
   fn: import { submitFeedback } from "@src/spaces/operations",
-  entities: [Space, ContributorHandle, FeedbackEntry, SpaceSummary, SpacePrompt, SpaceModel]
+  entities: [Space, ContributorHandle, FeedbackEntry, SpaceSummary, SpacePrompt, AppSetting]
 }
 
-action saveExperimentDeck {
-  fn: import { saveExperimentDeck } from "@src/spaces/operations",
-  entities: [Space, SpaceSummary, SpacePrompt, SpaceModel, FeedbackEntry, AppSetting]
+action saveSpaceSummaryPrompt {
+  fn: import { saveSpaceSummaryPrompt } from "@src/spaces/operations",
+  entities: [Space, ContributorHandle, SpacePrompt, SpaceSummary, FeedbackEntry, AppSetting]
 }
 
 query getSpaceSummary {
   fn: import { getSpaceSummary } from "@src/spaces/operations",
-  entities: [Space, SpaceSummary, FeedbackEntry, SpacePrompt, SpaceModel, AppSetting]
+  entities: [Space, SpaceSummary, FeedbackEntry, SpacePrompt, AppSetting]
 }
 
 api regenerateAllSummaries {
   fn: import { regenerateAllSummaries } from "@src/spaces/regenerateAllSummariesApi",
   httpRoute: (POST, "/admin/regenerate-all-summaries"),
-  entities: [Space, FeedbackEntry, SpaceSummary, SpacePrompt, SpaceModel, AppSetting],
+  entities: [Space, FeedbackEntry, SpaceSummary, SpacePrompt, AppSetting],
   auth: false
 }

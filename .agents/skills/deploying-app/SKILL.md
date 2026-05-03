@@ -23,3 +23,5 @@ More info can be found in the Wasp Social Auth Providers docs.
 Safe to rerun: `wasp deploy <provider> deploy`
 
 **DO NOT rerun**: `wasp deploy <provider> launch` commands (one-time only)
+
+For **reShkolo** on **Railway** after the first launch, follow [railway-redeploy](../railway-redeploy/SKILL.md) (`REACT_APP_API_URL`, `--custom-server-url`, optional `--skip-server`).

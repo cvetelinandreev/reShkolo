@@ -10,7 +10,6 @@ const entities: ExperimentEntities = {
   FeedbackEntry: prisma.feedbackEntry,
   AppSetting: prisma.appSetting,
   SpacePrompt: prisma.spacePrompt,
-  SpaceModel: prisma.spaceModel,
   SpaceSummary: prisma.spaceSummary,
 };
 
@@ -31,7 +30,7 @@ async function recoverPendingOrFailedSummaries(): Promise<void> {
     select: {
       spaceId: true,
       promptId: true,
-      spaceModelId: true,
+      modelSlug: true,
       id: true,
     },
   });
@@ -39,7 +38,7 @@ async function recoverPendingOrFailedSummaries(): Promise<void> {
 
   const cardByKey = new Map<string, { spaceId: string; aggregationId: string }>();
   for (const row of rows) {
-    const key = `${row.spaceId}::${row.promptId}::${row.spaceModelId}`;
+    const key = `${row.spaceId}::${row.promptId}::${row.modelSlug}`;
     if (!cardByKey.has(key)) {
       cardByKey.set(key, { spaceId: row.spaceId, aggregationId: row.id });
     }

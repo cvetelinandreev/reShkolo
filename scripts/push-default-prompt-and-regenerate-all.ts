@@ -17,7 +17,6 @@ function entitiesFromPrisma(prisma: PrismaClient): ExperimentEntities {
     AppSetting: prisma.appSetting,
     SpaceSummary: prisma.spaceSummary,
     SpacePrompt: prisma.spacePrompt,
-    SpaceModel: prisma.spaceModel,
   };
 }
 

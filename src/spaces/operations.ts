@@ -7,20 +7,21 @@ import type {
   CreateSpace,
   GetSpaceSummary,
   JoinSpace,
-  SaveExperimentDeck,
+  SaveSpaceSummaryPrompt,
   SubmitFeedback,
 } from "wasp/server/operations";
+import {
+  ALL_PROVIDER_SLUGS,
+  getProviderInfo,
+  isModelProviderSlug,
+} from "../server/llm/modelProviders";
 import { classifyFeedbackText } from "./classify";
 import {
   ensureExperimentDefaultsForSpace,
   regenerateExperimentAggregations,
-  syncExperimentAggregationRows,
 } from "./experimentAsync";
 import { bootstrapSummaryRecovery } from "./summaryRecovery";
-import {
-  getSummaryPromptInputFromDb,
-  SUMMARY_PROMPT_INPUT_KEY,
-} from "./defaultPromptStore";
+import { getSummaryPromptInputFromDb } from "./defaultPromptStore";
 export const TONE = {
   praise: "praise",
   constructive_criticism: "constructive_criticism",
@@ -40,13 +41,6 @@ export const JOB = {
 const SHORT_CODE_CHARS = "23456789abcdefghjkmnpqrstuvwxyz";
 
 const SLUG_RE = /^[a-z0-9-]{1,48}$/;
-const MAX_PROMPTS = 12;
-const MAX_MODELS = 12;
-const MAX_COMBOS = 48;
-const DEFAULT_EMPTY_SUMMARY_BG =
-  "Още никой не е изпратил нито похвала, нито забележка за {subject}. Можеш да бъдеш първият.";
-const DEFAULT_EMPTY_SUMMARY_EN =
-  "No one has submitted any praise or feedback about {subject} yet — you can be the first.";
 
 bootstrapSummaryRecovery();
 
@@ -66,11 +60,21 @@ function mapClassificationMeta(summary: {
   totalCount: number;
   positiveCount: number;
   negativeCount: number;
+  placesCount: number;
+  firstFeedbackAt: Date | null;
+  lastFeedbackAt: Date | null;
 }) {
   return {
     totalCount: summary.totalCount,
     positiveCount: summary.positiveCount,
     negativeCount: summary.negativeCount,
+    placesCount: summary.placesCount,
+    firstFeedbackAt: summary.firstFeedbackAt
+      ? summary.firstFeedbackAt.toISOString()
+      : null,
+    lastFeedbackAt: summary.lastFeedbackAt
+      ? summary.lastFeedbackAt.toISOString()
+      : null,
   };
 }
 
@@ -78,11 +82,25 @@ async function getClassificationMetaFromFeedback(
   spaceId: string,
   feedbackEntry: any,
 ): Promise<ReturnType<typeof mapClassificationMeta>> {
-  const totals = (await feedbackEntry.groupBy({
-    by: ["tone"],
-    where: { spaceId },
-    _count: { _all: true },
-  })) as Array<{ tone: string; _count: { _all: number } }>;
+  const [totals, placeRows, dateRange] = await Promise.all([
+    feedbackEntry.groupBy({
+      by: ["tone"],
+      where: { spaceId },
+      _count: { _all: true },
+    }) as Promise<Array<{ tone: string; _count: { _all: number } }>>,
+    feedbackEntry.groupBy({
+      by: ["contributorHandleId"],
+      where: { spaceId },
+    }) as Promise<Array<{ contributorHandleId: string }>>,
+    feedbackEntry.aggregate({
+      where: { spaceId },
+      _min: { createdAt: true },
+      _max: { createdAt: true },
+    }) as Promise<{
+      _min: { createdAt: Date | null };
+      _max: { createdAt: Date | null };
+    }>,
+  ]);
 
   let positiveCount = 0;
   let negativeCount = 0;
@@ -91,18 +109,25 @@ async function getClassificationMetaFromFeedback(
     if (row.tone === TONE.constructive_criticism) negativeCount = row._count._all;
   }
   const totalCount = positiveCount + negativeCount;
-  return mapClassificationMeta({ totalCount, positiveCount, negativeCount });
+  return mapClassificationMeta({
+    totalCount,
+    positiveCount,
+    negativeCount,
+    placesCount: placeRows.length,
+    firstFeedbackAt: dateRange._min.createdAt ?? null,
+    lastFeedbackAt: dateRange._max.createdAt ?? null,
+  });
 }
 
 function pickPrimaryAggregation<T extends {
   prompt: { slug: string };
-  spaceModel: { slug: string };
+  modelSlug: string;
 }>(rows: T[]): T | null {
   if (rows.length === 0) return null;
   const sorted = [...rows].sort((a, b) => {
     const p = a.prompt.slug.localeCompare(b.prompt.slug);
     if (p !== 0) return p;
-    return a.spaceModel.slug.localeCompare(b.spaceModel.slug);
+    return a.modelSlug.localeCompare(b.modelSlug);
   });
   return sorted[0] ?? null;
 }
@@ -113,15 +138,15 @@ function combineLanguageRows<T extends {
   summaryText: string | null;
   jobStatus: string;
   updatedAt: Date | null;
+  modelSlug: string;
   prompt: { slug: string; summaryPromptOutput: string };
-  spaceModel: { slug: string; displayName: string; modelApiId: string };
 }>(rows: T[]) {
   const byKey = new Map<
     string,
     {
       id: string;
       prompt: T["prompt"];
-      spaceModel: T["spaceModel"];
+      modelSlug: string;
       summaryTextEn: string | null;
       summaryTextBg: string | null;
       langStatusEn: string;
@@ -131,11 +156,11 @@ function combineLanguageRows<T extends {
     }
   >();
   for (const row of rows) {
-    const key = `${row.prompt.slug}::${row.spaceModel.slug}`;
+    const key = `${row.prompt.slug}::${row.modelSlug}`;
     const cur = byKey.get(key) ?? {
       id: row.id,
       prompt: row.prompt,
-      spaceModel: row.spaceModel,
+      modelSlug: row.modelSlug,
       summaryTextEn: null,
       summaryTextBg: null,
       langStatusEn: JOB.pending,
@@ -171,6 +196,7 @@ export const createSpace: CreateSpace<
     spaceId: string;
     shortCode: string;
     contributorHandleId: string;
+    ownerContributorHandleId: string;
   }
 > = async ({ name, displayLang }, context) => {
   let shortCode = "";
@@ -201,26 +227,12 @@ export const createSpace: CreateSpace<
     },
   });
 
+  await context.entities.Space.update({
+    where: { id: space.id },
+    data: { ownerContributorHandleId: handle.id },
+  });
+
   await ensureExperimentDefaultsForSpace(space.id, context.entities);
-  const subject = space.name?.trim() || space.shortCode;
-  const emptyBg = DEFAULT_EMPTY_SUMMARY_BG.replace("{subject}", subject);
-  const emptyEn = DEFAULT_EMPTY_SUMMARY_EN.replace("{subject}", subject);
-  await context.entities.SpaceSummary.updateMany({
-    where: { spaceId: space.id },
-    data: {
-      summaryText: emptyEn,
-      jobStatus: JOB.ready,
-      updatedAt: new Date(),
-    },
-  });
-  await context.entities.SpaceSummary.updateMany({
-    where: { spaceId: space.id, language: "bg" },
-    data: {
-      summaryText: emptyBg,
-      jobStatus: JOB.ready,
-      updatedAt: new Date(),
-    },
-  });
 
   devServerLog("createSpace", {
     spaceId: space.id,
@@ -233,6 +245,7 @@ export const createSpace: CreateSpace<
     spaceId: space.id,
     shortCode: space.shortCode,
     contributorHandleId: handle.id,
+    ownerContributorHandleId: handle.id,
   };
 };
 
@@ -246,6 +259,7 @@ export const joinSpace: JoinSpace<
     classificationMeta: ReturnType<typeof mapClassificationMeta>;
     updatedAt: string | null;
     contributorHandleId: string;
+    ownerContributorHandleId: string | null;
   }
 > = async ({ shortCode, displayLang }, context) => {
   const code = shortCode.trim().toLowerCase();
@@ -257,6 +271,8 @@ export const joinSpace: JoinSpace<
     throw new HttpError(404, "Space not found");
   }
 
+  await ensureExperimentDefaultsForSpace(space.id, context.entities);
+
   const handle = await context.entities.ContributorHandle.create({
     data: { spaceId: space.id },
   });
@@ -264,7 +280,7 @@ export const joinSpace: JoinSpace<
   const [rows, classificationMeta] = await Promise.all([
     context.entities.SpaceSummary.findMany({
       where: { spaceId: space.id },
-      include: { prompt: true, spaceModel: true },
+      include: { prompt: true },
     }),
     getClassificationMetaFromFeedback(space.id, context.entities.FeedbackEntry),
   ]);
@@ -287,6 +303,7 @@ export const joinSpace: JoinSpace<
     classificationMeta,
     updatedAt: primary?.updatedAt ? primary.updatedAt.toISOString() : null,
     contributorHandleId: handle.id,
+    ownerContributorHandleId: space.ownerContributorHandleId,
   };
 };
 
@@ -301,6 +318,7 @@ export const submitFeedback: SubmitFeedback<
   {
     accepted: boolean;
     classificationMeta: ReturnType<typeof mapClassificationMeta>;
+    contributorHandleId: string;
   }
 > = async ({ spaceId, contributorHandleId, text, sourceType, displayLang }, context) => {
   const trimmed = text.trim();
@@ -308,12 +326,21 @@ export const submitFeedback: SubmitFeedback<
     throw new HttpError(400, "Feedback text is required");
   }
 
-  const handle = await context.entities.ContributorHandle.findFirst({
+  const space = await context.entities.Space.findUnique({
+    where: { id: spaceId },
+    select: { id: true },
+  });
+  if (!space) {
+    throw new HttpError(404, "Space not found");
+  }
+
+  let handle = await context.entities.ContributorHandle.findFirst({
     where: { id: contributorHandleId, spaceId },
   });
   if (!handle) {
-    devServerLog("submitFeedback.invalid_handle", { spaceId, contributorHandleId });
-    throw new HttpError(403, "Invalid contributor handle for this space");
+    handle = await context.entities.ContributorHandle.create({
+      data: { spaceId },
+    });
   }
 
   const classification = await classifyFeedbackText(trimmed);
@@ -323,7 +350,7 @@ export const submitFeedback: SubmitFeedback<
   await context.entities.FeedbackEntry.create({
     data: {
       spaceId,
-      contributorHandleId,
+      contributorHandleId: handle.id,
       rawText: trimmed,
       tone,
       sourceType: sourceType === "voice" ? SOURCE.voice : SOURCE.text,
@@ -352,17 +379,10 @@ export const submitFeedback: SubmitFeedback<
     });
   });
 
-  devServerLog("submitFeedback", {
-    spaceId,
-    sourceType,
-    textChars: trimmed.length,
-    tone,
-    totalCount: classificationMeta.totalCount,
-  });
-
   return {
     accepted: true,
     classificationMeta,
+    contributorHandleId: handle.id,
   };
 };
 
@@ -375,6 +395,7 @@ export const getSpaceSummary: GetSpaceSummary<
     jobStatus: string;
     spaceName: string | null;
     shortCode: string;
+    ownerContributorHandleId: string | null;
     experimentAggregations: Array<{
       id: string;
       promptSlug: string;
@@ -391,11 +412,6 @@ export const getSpaceSummary: GetSpaceSummary<
     }>;
     summaryPromptInput: string;
     summaryPrompts: Array<{ slug: string; summaryPromptOutput: string }>;
-    experimentModels: Array<{
-      slug: string;
-      displayName: string;
-      modelApiId: string;
-    }>;
   }
 > = async ({ spaceId, displayLang }, context) => {
   const lang = normalizeSummaryDisplayLang(displayLang);
@@ -407,20 +423,15 @@ export const getSpaceSummary: GetSpaceSummary<
     throw new HttpError(404, "Space not found");
   }
 
-  const [promptRows, modelRows, rawAggs, summaryPromptInput, classificationMeta] = await Promise.all([
+  const [promptRows, rawAggs, summaryPromptInput, classificationMeta] = await Promise.all([
     context.entities.SpacePrompt.findMany({
       where: { spaceId },
       orderBy: { slug: "asc" },
       select: { slug: true, summaryPromptOutput: true },
     }),
-    context.entities.SpaceModel.findMany({
-      where: { spaceId },
-      orderBy: { slug: "asc" },
-      select: { slug: true, displayName: true, modelApiId: true },
-    }),
     context.entities.SpaceSummary.findMany({
       where: { spaceId },
-      include: { prompt: true, spaceModel: true },
+      include: { prompt: true },
     }),
     getSummaryPromptInputFromDb(context.entities.AppSetting),
     getClassificationMetaFromFeedback(spaceId, context.entities.FeedbackEntry),
@@ -428,26 +439,33 @@ export const getSpaceSummary: GetSpaceSummary<
   const combined = combineLanguageRows(rawAggs);
   const primary = pickPrimaryAggregation(combined);
 
+  const knownSlugs = new Set<string>(ALL_PROVIDER_SLUGS);
   const experimentAggregations = [...combined]
+    .filter((row) => knownSlugs.has(row.modelSlug))
     .sort((a, b) => {
       const p = a.prompt.slug.localeCompare(b.prompt.slug);
       if (p !== 0) return p;
-      return a.spaceModel.slug.localeCompare(b.spaceModel.slug);
+      return a.modelSlug.localeCompare(b.modelSlug);
     })
-    .map((row) => ({
-      id: row.id,
-      promptSlug: row.prompt.slug,
-      summaryPromptOutput: row.prompt.summaryPromptOutput,
-      modelSlug: row.spaceModel.slug,
-      modelDisplayName: row.spaceModel.displayName,
-      modelApiId: row.spaceModel.modelApiId,
-      summaryTextEn: row.summaryTextEn,
-      summaryTextBg: row.summaryTextBg,
-      langStatusEn: row.langStatusEn,
-      langStatusBg: row.langStatusBg,
-      jobStatus: row.jobStatus,
-      updatedAt: row.updatedAt ? row.updatedAt.toISOString() : null,
-    }));
+    .map((row) => {
+      const info = isModelProviderSlug(row.modelSlug)
+        ? getProviderInfo(row.modelSlug)
+        : { slug: row.modelSlug, displayName: row.modelSlug, modelApiId: row.modelSlug };
+      return {
+        id: row.id,
+        promptSlug: row.prompt.slug,
+        summaryPromptOutput: row.prompt.summaryPromptOutput,
+        modelSlug: info.slug,
+        modelDisplayName: info.displayName,
+        modelApiId: info.modelApiId,
+        summaryTextEn: row.summaryTextEn,
+        summaryTextBg: row.summaryTextBg,
+        langStatusEn: row.langStatusEn,
+        langStatusBg: row.langStatusBg,
+        jobStatus: row.jobStatus,
+        updatedAt: row.updatedAt ? row.updatedAt.toISOString() : null,
+      };
+    });
 
   return {
     summary: primary ? pickSummaryForDisplay(primary, lang) : null,
@@ -456,16 +474,12 @@ export const getSpaceSummary: GetSpaceSummary<
     jobStatus: primary?.jobStatus ?? JOB.pending,
     spaceName: space.name,
     shortCode: space.shortCode,
+    ownerContributorHandleId: space.ownerContributorHandleId,
     experimentAggregations,
     summaryPromptInput,
     summaryPrompts: promptRows.map((p) => ({
       slug: p.slug,
       summaryPromptOutput: p.summaryPromptOutput,
-    })),
-    experimentModels: modelRows.map((m) => ({
-      slug: m.slug,
-      displayName: m.displayName,
-      modelApiId: m.modelApiId,
     })),
   };
   } catch (err) {
@@ -474,121 +488,76 @@ export const getSpaceSummary: GetSpaceSummary<
   }
 };
 
-export const saveExperimentDeck: SaveExperimentDeck<
+export const saveSpaceSummaryPrompt: SaveSpaceSummaryPrompt<
   {
     spaceId: string;
-    summaryPromptInput: string;
-    prompts: Array<{ slug: string; summaryPromptOutput: string }>;
-    models: Array<{ slug: string; displayName: string; modelApiId: string }>;
+    contributorHandleId: string;
+    promptSlug: string;
+    summaryPromptOutput: string;
+    displayLang?: SummaryDisplayLang;
   },
   { ok: true }
-> = async ({ spaceId, summaryPromptInput, prompts, models }, context) => {
+> = async (
+  { spaceId, contributorHandleId, promptSlug, summaryPromptOutput, displayLang },
+  context,
+) => {
   const space = await context.entities.Space.findUnique({
     where: { id: spaceId },
+    select: { ownerContributorHandleId: true, shortCode: true },
   });
   if (!space) {
     throw new HttpError(404, "Space not found");
   }
-
-  if (prompts.length < 1 || models.length < 1) {
-    throw new HttpError(400, "At least one prompt and one model are required.");
+  if (!space.ownerContributorHandleId || space.ownerContributorHandleId !== contributorHandleId) {
+    throw new HttpError(403, "Only the space owner can edit the summary prompt.");
   }
 
-  if (prompts.length > MAX_PROMPTS || models.length > MAX_MODELS) {
-    throw new HttpError(400, "Too many prompts or models");
-  }
-  if (prompts.length * models.length > MAX_COMBOS) {
-    throw new HttpError(400, "Too many prompt × model combinations");
-  }
-
-  const inputTrimmed = summaryPromptInput.trim();
-  if (inputTrimmed.length < 40) {
-    throw new HttpError(400, "Shared input template is too short.");
-  }
-  if (inputTrimmed.length > 32000) {
-    throw new HttpError(400, "Shared input template is too long.");
-  }
-
-  for (const p of prompts) {
-    const slug = p.slug.trim().toLowerCase();
-    if (!SLUG_RE.test(slug)) {
-      throw new HttpError(400, "Invalid prompt slug (use lowercase letters, digits, hyphen).");
-    }
-    const out = p.summaryPromptOutput.trim();
-    if (out.length < 8) {
-      throw new HttpError(400, "Each prompt needs substantive output rules.");
-    }
-    if (out.length > 32000) {
-      throw new HttpError(400, "Prompt output section is too long.");
-    }
-  }
-
-  for (const m of models) {
-    const slug = m.slug.trim().toLowerCase();
-    if (!SLUG_RE.test(slug)) {
-      throw new HttpError(400, "Invalid model slug (use lowercase letters, digits, hyphen).");
-    }
-    const displayName = m.displayName.trim();
-    if (displayName.length < 1 || displayName.length > 120) {
-      throw new HttpError(400, "Model display name length invalid.");
-    }
-    const modelApiId = m.modelApiId.trim();
-    if (modelApiId.length < 2 || modelApiId.length > 200) {
-      throw new HttpError(400, "Model API id length invalid.");
-    }
-  }
-
-  const seenP = new Set<string>();
-  for (const p of prompts) {
-    const s = p.slug.trim().toLowerCase();
-    if (seenP.has(s)) throw new HttpError(400, "Duplicate prompt slug.");
-    seenP.add(s);
-  }
-  const seenM = new Set<string>();
-  for (const m of models) {
-    const s = m.slug.trim().toLowerCase();
-    if (seenM.has(s)) throw new HttpError(400, "Duplicate model slug.");
-    seenM.add(s);
-  }
-
-  await context.entities.SpaceSummary.deleteMany({
-    where: { spaceId },
+  const handle = await context.entities.ContributorHandle.findFirst({
+    where: { id: contributorHandleId, spaceId },
   });
-  await context.entities.SpacePrompt.deleteMany({
-    where: { spaceId },
+  if (!handle) {
+    throw new HttpError(403, "Invalid contributor handle for this space.");
+  }
+
+  const slug = promptSlug.trim().toLowerCase();
+  if (!SLUG_RE.test(slug)) {
+    throw new HttpError(400, "Invalid prompt slug.");
+  }
+
+  const out = summaryPromptOutput.trim();
+  if (out.length < 8) {
+    throw new HttpError(400, "Prompt output rules are too short.");
+  }
+  if (out.length > 32000) {
+    throw new HttpError(400, "Prompt output section is too long.");
+  }
+
+  const promptRow = await context.entities.SpacePrompt.findFirst({
+    where: { spaceId, slug },
   });
-  await context.entities.SpaceModel.deleteMany({
-    where: { spaceId },
+  if (!promptRow) {
+    throw new HttpError(404, "Prompt not found for this space.");
+  }
+
+  await context.entities.SpacePrompt.update({
+    where: { id: promptRow.id },
+    data: { summaryPromptOutput: out },
   });
 
-  await context.entities.AppSetting.upsert({
-    where: { key: SUMMARY_PROMPT_INPUT_KEY },
-    create: { key: SUMMARY_PROMPT_INPUT_KEY, value: inputTrimmed },
-    update: { value: inputTrimmed },
+  await context.entities.SpaceSummary.updateMany({
+    where: { spaceId, promptId: promptRow.id },
+    data: { jobStatus: JOB.pending, updatedAt: new Date() },
   });
 
-  await context.entities.SpacePrompt.createMany({
-    data: prompts.map((p) => ({
-      spaceId,
-      slug: p.slug.trim().toLowerCase(),
-      summaryPromptOutput: p.summaryPromptOutput.trim(),
-    })),
-  });
-  await context.entities.SpaceModel.createMany({
-    data: models.map((m) => ({
-      spaceId,
-      slug: m.slug.trim().toLowerCase(),
-      displayName: m.displayName.trim(),
-      modelApiId: m.modelApiId.trim(),
-    })),
-  });
-  await syncExperimentAggregationRows(spaceId, context.entities);
-
-  devServerLog("saveExperimentDeck", {
+  void regenerateExperimentAggregations(
     spaceId,
-    shortCode: space.shortCode,
-    promptCount: prompts.length,
-    modelCount: models.length,
+    context.entities,
+    normalizeSummaryDisplayLang(displayLang),
+  ).catch((err) => {
+    console.error("[saveSpaceSummaryPrompt] async summary regeneration failed", {
+      spaceId,
+      err,
+    });
   });
 
   return { ok: true as const };

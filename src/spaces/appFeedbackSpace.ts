@@ -4,7 +4,7 @@ import type { SummaryDisplayLang } from "./aggregationShared";
 /**
  * Fixed primary key for the in-app feedback space (join via `APP_FEEDBACK_SPACE_SHORT_CODE`).
  * Must stay aligned with:
- * - `migrations/20260422160000_app_feedback_space` and `20260425181000_space_shortcode_lowercase`
+ * - `migrations/20260429104500_seed_reshkolo_and_app_defaults` (space + AppSetting seed)
  * - `scripts/reset-db-reshkolo.sh`
  */
 export const APP_FEEDBACK_SPACE_ID =

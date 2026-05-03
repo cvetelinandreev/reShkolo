@@ -72,6 +72,7 @@ async function callOpenAiCompatibleChatCompletions(params: {
   providerLabel: string;
   /** Merged into the JSON body (e.g. Groq `reasoning_effort` for gpt-oss). */
   extraBody?: Record<string, unknown>;
+  logRawRequest?: boolean;
 }): Promise<string> {
   const body: Record<string, unknown> = {
     model: params.model,
@@ -83,13 +84,20 @@ async function callOpenAiCompatibleChatCompletions(params: {
     ...params.extraBody,
   };
 
+  const bodyJson = JSON.stringify(body);
+  if (params.logRawRequest) {
+    console.log(
+      `[LLM] ${params.providerLabel} POST ${params.url} — raw request body:\n${bodyJson}`,
+    );
+  }
+
   const res = await fetch(params.url, {
     method: "POST",
     headers: {
       "content-type": "application/json",
       authorization: `Bearer ${params.apiKey}`,
     },
-    body: JSON.stringify(body),
+    body: bodyJson,
   });
 
   if (!res.ok) {
@@ -144,38 +152,38 @@ export async function callLlmText(params: {
   system: string;
   messages: AnthropicMessage[];
   maxTokens: number;
-  /** When LLM_DEBUG_LOG=true, included in server logs for grep-friendly traces. */
+  /** When LLM_DEBUG_LOG=true, the raw request body is printed before the HTTP call. */
   debugLabel?: string;
 }): Promise<string> {
-  if (process.env.LLM_DEBUG_LOG === "true") {
-    console.log("[LLM_DEBUG]", {
-      debugLabel: params.debugLabel,
-      model: params.model,
-      maxTokens: params.maxTokens,
-      system: params.system,
-      messages: params.messages,
-    });
-  }
+  const logRawRequest =
+    process.env.LLM_DEBUG_LOG === "true" && params.debugLabel !== "classify";
 
   const callGeminiOnce = async (modelName: string, key: string): Promise<string> => {
     const model = encodeURIComponent(modelName.trim());
-    const res = await fetch(`${GEMINI_API}/${model}:generateContent?key=${key}`, {
+    const url = `${GEMINI_API}/${model}:generateContent?key=${key}`;
+    const bodyJson = JSON.stringify({
+      system_instruction: {
+        parts: [{ text: params.system }],
+      },
+      generationConfig: {
+        maxOutputTokens: params.maxTokens,
+      },
+      contents: params.messages.map((m) => ({
+        role: m.role === "assistant" ? "model" : "user",
+        parts: [{ text: m.content }],
+      })),
+    });
+    if (logRawRequest) {
+      console.log(
+        `[LLM] Gemini POST ${GEMINI_API}/${model}:generateContent — raw request body:\n${bodyJson}`,
+      );
+    }
+    const res = await fetch(url, {
       method: "POST",
       headers: {
         "content-type": "application/json",
       },
-      body: JSON.stringify({
-        system_instruction: {
-          parts: [{ text: params.system }],
-        },
-        generationConfig: {
-          maxOutputTokens: params.maxTokens,
-        },
-        contents: params.messages.map((m) => ({
-          role: m.role === "assistant" ? "model" : "user",
-          parts: [{ text: m.content }],
-        })),
-      }),
+      body: bodyJson,
     });
     const bodyText = await res.text();
     if (!res.ok) {
@@ -247,6 +255,7 @@ export async function callLlmText(params: {
       messages: params.messages,
       maxTokens: params.maxTokens,
       providerLabel: "OpenAI",
+      logRawRequest,
     });
   }
 
@@ -268,6 +277,7 @@ export async function callLlmText(params: {
       maxTokens,
       providerLabel: "Groq",
       extraBody: Object.keys(extraBody).length > 0 ? extraBody : undefined,
+      logRawRequest,
     });
   }
 
@@ -276,6 +286,17 @@ export async function callLlmText(params: {
     throw new Error("No matching API key is set for selected model/provider");
   }
 
+  const anthropicBodyJson = JSON.stringify({
+    model: params.model,
+    max_tokens: params.maxTokens,
+    system: params.system,
+    messages: params.messages,
+  });
+  if (logRawRequest) {
+    console.log(
+      `[LLM] Anthropic POST ${ANTHROPIC_API} — raw request body:\n${anthropicBodyJson}`,
+    );
+  }
   const res = await fetch(ANTHROPIC_API, {
     method: "POST",
     headers: {
@@ -283,12 +304,7 @@ export async function callLlmText(params: {
       "x-api-key": anthropicKey,
       "anthropic-version": "2023-06-01",
     },
-    body: JSON.stringify({
-      model: params.model,
-      max_tokens: params.maxTokens,
-      system: params.system,
-      messages: params.messages,
-    }),
+    body: anthropicBodyJson,
   });
 
   if (!res.ok) {

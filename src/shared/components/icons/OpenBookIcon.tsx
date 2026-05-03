@@ -1,7 +1,7 @@
 /**
  * Raster open-book glyph (source: pngfind.com/m/png/TbRmxm — personal use).
  */
-import openBookImg from "../../../assets/open-book-comments.jpg";
+import openBookImg from "../../../assets/open-book-comments.webp";
 
 export function OpenBookIcon({ className }: { className?: string }) {
   return (
