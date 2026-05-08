@@ -18,3 +18,6 @@ export const OPENAI_GPT_55_MINI_MODEL = "gpt-5.5-mini";
 
 /** Groq Cloud OpenAI-compatible chat — Llama default with higher TPM headroom for summaries (set GROQ_MODEL_SUMMARY to override). */
 export const GROQ_LLAMA_4_SCOUT_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct";
+
+/** BgGPT (api.bggpt.ai) — Bulgarian-tuned Gemma, OpenAI-compatible chat. 20 RPM free tier. */
+export const BGGPT_GEMMA_3_27B_MODEL = "bggpt-gemma-3-27b-fp8";

@@ -1,6 +1,7 @@
 import {
   ANTHROPIC_HAIKU_45_MODEL,
   ANTHROPIC_SONNET_46_MODEL,
+  BGGPT_GEMMA_3_27B_MODEL,
   OPENAI_GPT_55_MINI_MODEL,
 } from "./modelIds";
 
@@ -29,6 +30,12 @@ export const MODEL_PROVIDERS = {
     apiKeyEnv: "OPENAI_API_KEY",
     modelIdEnv: "OPENAI_MODEL_SUMMARY",
     fallback: OPENAI_GPT_55_MINI_MODEL,
+  },
+  bggpt: {
+    displayName: "BgGPT Gemma 3 27B",
+    apiKeyEnv: "BGGPT_API_KEY",
+    modelIdEnv: "BGGPT_MODEL_SUMMARY",
+    fallback: BGGPT_GEMMA_3_27B_MODEL,
   },
 } as const satisfies Record<string, ProviderConfig>;
 

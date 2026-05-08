@@ -2,6 +2,7 @@ const ANTHROPIC_API = "https://api.anthropic.com/v1/messages";
 const GEMINI_API = "https://generativelanguage.googleapis.com/v1beta/models";
 const OPENAI_CHAT_API = "https://api.openai.com/v1/chat/completions";
 const GROQ_OPENAI_CHAT_API = "https://api.groq.com/openai/v1/chat/completions";
+const BGGPT_OPENAI_CHAT_API = "https://api.bggpt.ai/v1/chat/completions";
 const GEMINI_SAFE_FALLBACK_MODEL = "gemini-2.5-flash-lite";
 
 function sleepMs(ms: number): Promise<void> {
@@ -39,6 +40,10 @@ function shouldRouteViaOpenAI(model: string): boolean {
   return m.startsWith("gpt-") || m.startsWith("o1") || m.startsWith("o3") || m.startsWith("o4");
 }
 
+function shouldRouteViaBgGPT(model: string): boolean {
+  return model.trim().toLowerCase().startsWith("bggpt-");
+}
+
 /** Groq-hosted model ids (OpenAI-compatible chat/completions, not api.openai.com). */
 function shouldRouteViaGroq(model: string): boolean {
   const m = model.trim().toLowerCase();
@@ -72,11 +77,14 @@ async function callOpenAiCompatibleChatCompletions(params: {
   providerLabel: string;
   /** Merged into the JSON body (e.g. Groq `reasoning_effort` for gpt-oss). */
   extraBody?: Record<string, unknown>;
+  /** Some vLLM-backed proxies (e.g. BgGPT) only accept the legacy `max_tokens` field. */
+  useLegacyMaxTokens?: boolean;
   logRawRequest?: boolean;
 }): Promise<string> {
+  const tokenField = params.useLegacyMaxTokens ? "max_tokens" : "max_completion_tokens";
   const body: Record<string, unknown> = {
     model: params.model,
-    max_completion_tokens: params.maxTokens,
+    [tokenField]: params.maxTokens,
     messages: [
       { role: "system", content: params.system },
       ...params.messages,
@@ -255,6 +263,21 @@ export async function callLlmText(params: {
       messages: params.messages,
       maxTokens: params.maxTokens,
       providerLabel: "OpenAI",
+      logRawRequest,
+    });
+  }
+
+  const bggptKey = process.env.BGGPT_API_KEY?.trim();
+  if (bggptKey && shouldRouteViaBgGPT(params.model)) {
+    return await callOpenAiCompatibleChatCompletions({
+      url: BGGPT_OPENAI_CHAT_API,
+      apiKey: bggptKey,
+      model: params.model,
+      system: params.system,
+      messages: params.messages,
+      maxTokens: params.maxTokens,
+      providerLabel: "BgGPT",
+      useLegacyMaxTokens: true,
       logRawRequest,
     });
   }

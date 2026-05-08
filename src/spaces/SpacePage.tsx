@@ -669,10 +669,11 @@ export function SpacePage() {
     if (!activeSpace) return;
     const url = `${window.location.origin}/${activeSpace.shortCode}`;
     const title = "reShkolo";
+    const spaceName = displayNameForSpace(activeSpace);
     const text =
       lang === "bg"
-        ? `Пространство (${activeSpace.shortCode})`
-        : `Space (${activeSpace.shortCode})`;
+        ? `Похвали и забележки за ${spaceName}.`
+        : `Praise and remarks for ${spaceName}.`;
 
     try {
       if (typeof navigator.share === "function") {

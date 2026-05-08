@@ -64,7 +64,7 @@ export function emptyAggregationUserMessage(
 
 export function noLlmKeyAggregationMessage(lang: SummaryDisplayLang): string {
   return lang === "bg"
-    ? "Няма настроен ключ за LLM. Задайте ANTHROPIC_API_KEY, GROQ_API_KEY, GEMINI_API_KEY или OPENAI_API_KEY във .env.server."
-    : "No LLM key configured. Set ANTHROPIC_API_KEY, GROQ_API_KEY, GEMINI_API_KEY, or OPENAI_API_KEY in .env.server.";
+    ? "Няма настроен ключ за LLM. Задайте ANTHROPIC_API_KEY, GROQ_API_KEY, GEMINI_API_KEY, OPENAI_API_KEY или BGGPT_API_KEY във .env.server."
+    : "No LLM key configured. Set ANTHROPIC_API_KEY, GROQ_API_KEY, GEMINI_API_KEY, OPENAI_API_KEY, or BGGPT_API_KEY in .env.server.";
 }
 
