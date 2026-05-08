@@ -45,6 +45,18 @@ wasp db migrate-dev --name <descriptive-name>
 wasp start
 ```
 
+### Shell setup with direnv (optional)
+
+The repo ships a `.envrc` that pins Node to the version in `.node-version` (via nvm) and prepends `node_modules/.bin` to `PATH`. With [direnv](https://direnv.net/) installed and its shell hook enabled (`eval "$(direnv hook zsh)"`), bare `wasp`, `railway`, `prisma`, etc. resolve to the right binaries inside this folder — no `bash scripts/with-project-node.sh …` wrapper needed. After `cd reShkolo`, run `direnv allow` once to approve the file.
+
+Without direnv, the existing `npm run wasp:*` scripts and `scripts/with-project-node.sh` wrapper continue to work; direnv is just an ergonomic shortcut.
+
+> Heads-up: a globally-installed `wasp` under an older Node (e.g. via `nvm` Node 18) often has broken platform binaries and fails with `Can't locate the correct executable for your platform`. Inside this folder direnv routes around it. To fix it system-wide: `nvm use 22.22.2 && npm i -g @wasp.sh/wasp-cli`.
+
+### Deploying to Railway
+
+The app is deployed via `wasp deploy railway deploy reshkolo-prod` (project `120a3b6d-5ce0-41bc-9696-cf2d56f02dc9`). With direnv loaded the bare command works; otherwise prefix with `PATH="$PWD/node_modules/.bin:$PATH" bash scripts/with-project-node.sh` so the local Railway CLI and project Node are picked up. Production env vars (API keys, `DATABASE_URL`, etc.) live in the Railway dashboard under each service — the Wasp deploy command does **not** sync `.env.server`.
+
 ### One-command dev (recommended): `npm run start:phone`
 
 Use this when you want the same setup every time (correct Node version, Docker up, then Wasp):
